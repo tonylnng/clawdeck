@@ -2,7 +2,7 @@
 
 **ClawDeck** is an open-source web dashboard for managing [OpenClaw](https://openclaw.ai) multi-agent setups. Control your agents, monitor logs, browse workspaces, and explore agent memory — all from a clean, responsive UI.
 
-![ClawDeck Logo](./frontend/public/logo.png)
+<img src="./frontend/public/logo.png" alt="ClawDeck Logo" width="80" />
 
 ---
 
