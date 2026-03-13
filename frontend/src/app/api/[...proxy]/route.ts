@@ -66,9 +66,21 @@ async function proxyRequest(req: NextRequest, pathSegments: string[], method: st
     }
 
     const data = await res.text();
+
+    // Build response headers — must forward Set-Cookie for auth to work
+    const responseHeaders = new Headers();
+    responseHeaders.set('Content-Type', resContentType || 'application/json');
+
+    // Forward all Set-Cookie headers from backend (critical for login)
+    res.headers.forEach((value, key) => {
+      if (key.toLowerCase() === 'set-cookie') {
+        responseHeaders.append('Set-Cookie', value);
+      }
+    });
+
     return new NextResponse(data, {
       status: res.status,
-      headers: { 'Content-Type': resContentType || 'application/json' },
+      headers: responseHeaders,
     });
   } catch (err) {
     return NextResponse.json({ error: 'Proxy error', detail: String(err) }, { status: 502 });
