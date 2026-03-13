@@ -17,7 +17,8 @@
 - 🔐 **Secure by Default** — JWT auth, API key auto-redaction, file blacklist protection
 - 🌓 **Dark / Light Mode** — Follows system preference, manually toggleable
 - 📱 **Mobile Responsive** — Works on phones and tablets
-- 🐳 **Docker Compose** — One-command deployment
+- ⚙️ **Setup Wizard** — Visual config checker that guides you through any missing settings
+- 🐳 **One-command Install** — Interactive `install.sh` auto-detects your OpenClaw setup
 
 ---
 
@@ -57,22 +58,77 @@ newgrp docker
 
 ## Installation
 
+### Quick Install (Recommended)
+
+ClawDeck ships with an interactive installer that auto-detects your OpenClaw setup — no manual config needed.
+
 ```bash
-git clone https://github.com/YOUR_USERNAME/clawdeck.git
+git clone https://github.com/tonylnng/clawdeck.git
+cd clawdeck
+bash install.sh
+```
+
+The installer will:
+
+1. **Auto-detect** your `~/.openclaw/openclaw.json` → reads gateway port & token automatically
+2. **Scan** `~/.openclaw/agents/` → discovers all your agents and workspace paths
+3. **Ask** for admin username/password and Docker network mode
+4. **Generate** `.env` and `docker-compose.yml` tailored to your setup
+5. **Build & start** ClawDeck with `docker compose up -d --build`
+
+Then open **http://localhost:3000** and sign in.
+
+---
+
+### Manual Installation
+
+If you prefer to configure manually:
+
+```bash
+git clone https://github.com/tonylnng/clawdeck.git
 cd clawdeck
 cp .env.example .env
 ```
 
-Edit `.env` with your settings:
+Edit `.env`:
 
 ```env
+# Admin credentials
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=yourpassword        # plain password (dev) or use ADMIN_PASSWORD_HASH
-JWT_SECRET=your-32-char-secret     # generate: openssl rand -hex 32
+ADMIN_PASSWORD=yourpassword           # dev fallback (plain)
+ADMIN_PASSWORD_HASH=                  # recommended: bcrypt hash (see below)
+JWT_SECRET=                           # generate: openssl rand -hex 32
+JWT_EXPIRES_IN=24h
+
+# OpenClaw Gateway
 OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
-OPENCLAW_GATEWAY_TOKEN=your-gateway-token   # from openclaw.json gateway.auth.token
+OPENCLAW_GATEWAY_TOKEN=               # from ~/.openclaw/openclaw.json → gateway.token
+
+# Agents (comma-separated)
+CLAWDECK_AGENTS=main,my-second-agent
+
+# Workspace paths — one env var per agent
+# Naming: WORKSPACE_<AGENT_ID uppercased, hyphens → underscores>
+WORKSPACE_MAIN=/home/youruser/.openclaw/workspace
+WORKSPACE_MY_SECOND_AGENT=/home/youruser/.openclaw/workspace-my-second-agent
+
+# Ports & URLs
+BACKEND_PORT=3001
+FRONTEND_PORT=3000
+NODE_ENV=production
 NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 ```
+
+<details>
+<summary>Generate a bcrypt password hash</summary>
+
+```bash
+cd clawdeck/backend
+npm install           # if not already done
+node -e "const b=require('bcryptjs'); b.hash('yourpassword',10).then(console.log)"
+```
+
+</details>
 
 Then start:
 
@@ -80,33 +136,64 @@ Then start:
 docker compose up -d --build
 ```
 
-Open `http://localhost:3000` and sign in.
+Open **http://localhost:3000** and sign in.
+
+---
+
+## Setup & Status Page
+
+After logging in, go to **⚙️ Setup** in the sidebar to verify your configuration:
+
+- ✅ Gateway URL configured
+- ✅ Gateway reachable
+- ✅ Agents detected
+- ✅ Workspace paths resolved
+
+If anything is missing, the page shows exactly what to fix.
+
+---
+
+## Adding More Agents
+
+To add a new agent after install, edit `.env`:
+
+```env
+CLAWDECK_AGENTS=main,my-new-agent
+WORKSPACE_MY_NEW_AGENT=/home/youruser/.openclaw/workspace-my-new-agent
+```
+
+Add the workspace volume to `docker-compose.yml`:
+
+```yaml
+volumes:
+  - /home/youruser/.openclaw/workspace-my-new-agent:/home/youruser/.openclaw/workspace-my-new-agent:rw
+```
+
+Then restart:
+
+```bash
+docker compose up -d --build
+```
 
 ---
 
 ## Remote Access (Tailscale)
 
-ClawDeck works great over [Tailscale](https://tailscale.com). Bind to your Tailscale IP in `.env`:
+ClawDeck works great over [Tailscale](https://tailscale.com) for secure remote access from any device.
+
+During `install.sh`, choose **option 1** (host.docker.internal) for macOS/Windows Docker Desktop, or **option 3** (host network) for Linux.
+
+Then set your Tailscale IP as the public backend URL when prompted:
+
+```
+Public backend URL: http://100.x.x.x:3001
+```
+
+Or manually in `.env`:
 
 ```env
 NEXT_PUBLIC_BACKEND_URL=http://100.x.x.x:3001
 ```
-
-And update `docker-compose.yml` ports to include your Tailscale IP.
-
----
-
-## Agent Workspaces
-
-Default paths (configurable via env vars):
-
-| Agent | Path |
-|-------|------|
-| `main` | `~/.openclaw/workspace` |
-| `tonic-ai-tech` | `~/.openclaw/workspace-tonic-ai-tech` |
-| `tonic-ai-workflow` | `~/.openclaw/workspace-tonic-ai-workflow` |
-
-Override with `WORKSPACE_MAIN`, `WORKSPACE_TONIC_AI_TECH`, `WORKSPACE_TONIC_AI_WORKFLOW` env vars.
 
 ---
 
