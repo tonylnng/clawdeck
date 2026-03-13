@@ -60,7 +60,7 @@ fi
 
 # Extract gateway port and token from openclaw.json
 GATEWAY_PORT=$(python3 -c "import json,sys; d=json.load(open('$OPENCLAW_JSON')); print(d.get('gateway',{}).get('port', 18789))" 2>/dev/null || echo "18789")
-GATEWAY_TOKEN_DETECTED=$(python3 -c "import json,sys; d=json.load(open('$OPENCLAW_JSON')); print(d.get('gateway',{}).get('token',''))" 2>/dev/null || echo "")
+GATEWAY_TOKEN_DETECTED=$(python3 -c "import json,sys; d=json.load(open('$OPENCLAW_JSON')); print(d.get('gateway',{}).get('auth',{}).get('token','') or d.get('gateway',{}).get('token',''))" 2>/dev/null || echo "")
 
 info "Gateway port: $GATEWAY_PORT"
 
