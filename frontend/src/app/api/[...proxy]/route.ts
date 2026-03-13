@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || 'http://localhost:3001';
+// Read at request time (not module load) so runtime env overrides work in Docker
+function getBackendUrl() {
+  return process.env.BACKEND_INTERNAL_URL || 'http://localhost:3001';
+}
 
 export async function GET(req: NextRequest, { params }: { params: { proxy: string[] } }) {
   return proxyRequest(req, params.proxy, 'GET');
@@ -24,7 +27,7 @@ async function proxyRequest(req: NextRequest, pathSegments: string[], method: st
 
   const targetPath = pathSegments.join('/');
   const search = req.nextUrl.search || '';
-  const url = `${BACKEND_URL}/api/${targetPath}${search}`;
+  const url = `${getBackendUrl()}/api/${targetPath}${search}`;
 
   const headers: Record<string, string> = {
     'Content-Type': req.headers.get('content-type') || 'application/json',

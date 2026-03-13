@@ -1,18 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
-  env: {
-    NEXT_PUBLIC_BACKEND_URL: process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001',
-  },
-  async rewrites() {
-    const backendUrl = process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
-    return [
-      {
-        source: '/api/:path*',
-        destination: `${backendUrl}/api/:path*`,
-      },
-    ];
-  },
+  // NOTE: Do NOT use rewrites() for /api/* — rewrites are build-time and cannot
+  // use runtime env vars. The [...proxy] route handler reads BACKEND_INTERNAL_URL
+  // at request time, which correctly supports Docker bridge networking.
 };
 
 module.exports = nextConfig;
