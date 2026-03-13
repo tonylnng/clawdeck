@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/layout/ThemeToggle';
+import { Footer } from '@/components/layout/Footer';
 import { Separator } from '@/components/ui/separator';
 import Image from 'next/image';
 import {
@@ -154,6 +155,8 @@ export default function DashboardLayout({
         <main className="flex-1 overflow-hidden">
           {children}
         </main>
+
+        <Footer />
       </div>
     </div>
   );

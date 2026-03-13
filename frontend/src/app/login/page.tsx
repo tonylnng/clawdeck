@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ThemeToggle } from '@/components/layout/ThemeToggle';
+import { Footer } from '@/components/layout/Footer';
 import Image from 'next/image';
 import { Loader2 } from 'lucide-react';
 
@@ -47,11 +48,12 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen flex flex-col bg-background">
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>
 
+      <div className="flex-1 flex items-center justify-center p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="space-y-1">
           <div className="flex items-center gap-3 mb-2">
@@ -109,6 +111,9 @@ export default function LoginPage() {
           </form>
         </CardContent>
       </Card>
+      </div>
+
+      <Footer />
     </div>
   );
 }
