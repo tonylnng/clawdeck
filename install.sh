@@ -150,37 +150,19 @@ fi
 
 section "Network configuration"
 
-# Auto-detect OS for default recommendation
+# Auto-detect OS and set network mode automatically
 OS_TYPE=$(uname -s)
 if [ "$OS_TYPE" = "Linux" ]; then
-  DEFAULT_NET="1"
-  OS_HINT="Linux detected"
+  # Linux: gateway binds to 127.0.0.1 only — host network is the only reliable option
+  NETWORK_MODE="host"
+  GATEWAY_HOST="127.0.0.1"
+  info "Linux detected → using host network mode (recommended)"
 else
-  DEFAULT_NET="2"
-  OS_HINT="macOS/Windows detected"
+  # macOS / Windows Docker Desktop: use host.docker.internal bridge
+  NETWORK_MODE="bridge"
+  GATEWAY_HOST="host.docker.internal"
+  info "macOS/Windows detected → using bridge network mode"
 fi
-
-echo "How is Docker connecting to your host? (${OS_HINT})"
-echo "  1) host network mode  ← Linux (recommended)"
-echo "  2) host.docker.internal  ← macOS / Windows / Docker Desktop"
-echo "  3) Custom IP"
-echo ""
-if [ "$OS_TYPE" = "Linux" ]; then
-  warn "Linux: OpenClaw gateway listens on 127.0.0.1 only."
-  warn "       Bridge mode CANNOT reach loopback — use option 1."
-fi
-prompt NET_MODE "Choice" "$DEFAULT_NET"
-
-case "$NET_MODE" in
-  1) GATEWAY_HOST="127.0.0.1"; NETWORK_MODE="host" ;;
-  2) GATEWAY_HOST="host.docker.internal"; NETWORK_MODE="bridge" ;;
-  3)
-    prompt GATEWAY_HOST "Enter host IP/hostname"
-    NETWORK_MODE="bridge"
-    warn "Custom IP with bridge mode: ensure your gateway is reachable from Docker containers."
-    ;;
-  *) GATEWAY_HOST="127.0.0.1"; NETWORK_MODE="host" ;;
-esac
 
 GATEWAY_URL="http://${GATEWAY_HOST}:${GATEWAY_PORT}"
 info "Gateway URL: $GATEWAY_URL"
