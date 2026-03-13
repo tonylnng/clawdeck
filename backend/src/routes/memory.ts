@@ -8,8 +8,11 @@ router.use(requireAuth);
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
 
-// Known agents
-const KNOWN_AGENTS = ['main', 'tonic-ai-tech', 'tonic-ai-workflow'];
+// Known agents — dynamically loaded from CLAWDECK_AGENTS env var (comma-separated)
+const KNOWN_AGENTS = (process.env.CLAWDECK_AGENTS || 'main')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // Agent ID → session key mapping
 function getSessionKey(agentId: string): string {

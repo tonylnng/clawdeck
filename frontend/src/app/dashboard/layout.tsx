@@ -16,6 +16,7 @@ import {
   X,
   Folder,
   Brain,
+  Settings,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/logs', icon: FileText, label: '📋 Logs' },
   { href: '/dashboard/workspace', icon: Folder, label: '📁 Workspace' },
   { href: '/dashboard/memory', icon: Brain, label: '🧠 Memory' },
+  { href: '/dashboard/setup', icon: Settings, label: '⚙️ Setup' },
 ];
 
 export default function DashboardLayout({

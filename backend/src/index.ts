@@ -9,6 +9,7 @@ import agentsRouter from './routes/agents';
 import logsRouter from './routes/logs';
 import workspaceRouter from './routes/workspace';
 import memoryRouter from './routes/memory';
+import configRouter from './routes/config';
 import { redactMiddleware } from './middleware/redact';
 
 dotenv.config();
@@ -54,6 +55,7 @@ app.use('/api/agents', agentsRouter);
 app.use('/api/logs', logsRouter);
 app.use('/api/workspace', workspaceRouter);
 app.use('/api/memory', memoryRouter);
+app.use('/api/config', configRouter);
 
 // Health check
 app.get('/health', (_req, res) => {

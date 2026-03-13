@@ -6,12 +6,37 @@ import { requireAuth } from '../middleware/auth';
 const router = Router();
 router.use(requireAuth);
 
-// Agent workspace path mapping
-const WORKSPACE_PATHS: Record<string, string> = {
-  main: process.env.WORKSPACE_MAIN || '/home/tonic/.openclaw/workspace',
-  'tonic-ai-tech': process.env.WORKSPACE_TONIC_AI_TECH || '/home/tonic/.openclaw/workspace-tonic-ai-tech',
-  'tonic-ai-workflow': process.env.WORKSPACE_TONIC_AI_WORKFLOW || '/home/tonic/.openclaw/workspace-tonic-ai-workflow',
-};
+// Agent workspace path mapping — dynamically built from env vars
+// Each agent's workspace is set via WORKSPACE_<AGENT_ID_UPPERCASED> env var
+// e.g. WORKSPACE_MAIN, WORKSPACE_TONIC_AI_TECH, WORKSPACE_TONIC_AI_WORKFLOW
+// CLAWDECK_AGENTS is a comma-separated list of agent IDs
+function buildWorkspacePaths(): Record<string, string> {
+  const paths: Record<string, string> = {};
+  const agentIds = (process.env.CLAWDECK_AGENTS || 'main')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const agentId of agentIds) {
+    const envKey = `WORKSPACE_${agentId.toUpperCase().replace(/-/g, '_')}`;
+    const wsPath = process.env[envKey];
+    if (wsPath) {
+      paths[agentId] = wsPath;
+    } else {
+      // Fallback: derive from standard OpenClaw convention
+      const home = process.env.HOME || '/home/tonic';
+      const ocDir = process.env.OPENCLAW_DIR || `${home}/.openclaw`;
+      paths[agentId] =
+        agentId === 'main'
+          ? `${ocDir}/workspace`
+          : `${ocDir}/workspace-${agentId}`;
+    }
+  }
+
+  return paths;
+}
+
+const WORKSPACE_PATHS: Record<string, string> = buildWorkspacePaths();
 
 // Blacklisted filenames / patterns
 const BLACKLIST_NAMES = ['auth-profiles.json', '.env', 'openclaw.json'];

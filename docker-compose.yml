@@ -24,6 +24,10 @@ services:
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-24h}
       - OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
       - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - CLAWDECK_AGENTS=${CLAWDECK_AGENTS:-main}
+      - WORKSPACE_MAIN=${WORKSPACE_MAIN:-}
+      - WORKSPACE_TONIC_AI_TECH=${WORKSPACE_TONIC_AI_TECH:-}
+      - WORKSPACE_TONIC_AI_WORKFLOW=${WORKSPACE_TONIC_AI_WORKFLOW:-}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 30s
