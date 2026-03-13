@@ -76,6 +76,8 @@ The installer will:
 4. **Generate** `.env` and `docker-compose.yml` tailored to your setup
 5. **Build & start** ClawDeck with `docker compose up -d --build`
 
+> **Linux users:** The installer defaults to `network_mode: host` — this is required because OpenClaw gateway listens on `127.0.0.1` only and is unreachable from Docker bridge networks.
+
 Then open **http://localhost:3000** and sign in.
 
 ---
