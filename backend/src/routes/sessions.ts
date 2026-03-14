@@ -55,16 +55,28 @@ function extractRawMessages(result: unknown): unknown[] {
     return r;
   }
 
-  // result.result exists
   if (r?.result) {
     const inner = r.result as Record<string, unknown>;
+
+    // OpenClaw actual format: result.content[0].text is a JSON string with {messages:[...]}
+    if (Array.isArray(inner?.content)) {
+      const contentArr = inner.content as Array<{type: string; text?: string}>;
+      const textPart = contentArr.find((p) => p.type === 'text' && p.text);
+      if (textPart?.text) {
+        try {
+          const parsed = JSON.parse(textPart.text) as Record<string, unknown>;
+          if (Array.isArray(parsed?.messages)) return parsed.messages as unknown[];
+          if (Array.isArray(parsed?.history)) return parsed.history as unknown[];
+        } catch { /* not JSON, continue */ }
+      }
+    }
 
     // result.result is an array
     if (Array.isArray(inner)) {
       return inner;
     }
 
-    // result.result.details.messages (actual OpenClaw format)
+    // result.result.details.messages
     const details = inner?.details as Record<string, unknown> | undefined;
     if (Array.isArray(details?.messages)) {
       return details.messages as unknown[];
@@ -80,7 +92,7 @@ function extractRawMessages(result: unknown): unknown[] {
       return inner.history as unknown[];
     }
 
-    // Last resort: find any array in inner
+    // Last resort: any array in inner
     for (const val of Object.values(inner)) {
       if (Array.isArray(val) && val.length > 0) {
         return val as unknown[];
@@ -158,10 +170,23 @@ router.get('/', async (_req: Request, res: Response) => {
       createdAt?: number;
     }
 
-    const sessions: SessionEntry[] =
-      raw?.result?.details?.sessions ??
-      (raw?.result as { sessions?: SessionEntry[] })?.sessions ??
-      [];
+    // OpenClaw format: result.content[0].text = JSON string with {count, sessions:[...]}
+    let sessions: SessionEntry[] = [];
+    const rawResult = raw?.result as Record<string, unknown> | undefined;
+    if (Array.isArray(rawResult?.content)) {
+      const textPart = (rawResult.content as Array<{type:string;text?:string}>)
+        .find(p => p.type === 'text' && p.text);
+      if (textPart?.text) {
+        try {
+          const parsed = JSON.parse(textPart.text) as { sessions?: SessionEntry[] };
+          sessions = parsed?.sessions ?? [];
+        } catch { /* ignore */ }
+      }
+    }
+    if (sessions.length === 0) {
+      const fallback = rawResult as { details?: { sessions?: SessionEntry[] }; sessions?: SessionEntry[] } | undefined;
+      sessions = fallback?.details?.sessions ?? fallback?.sessions ?? [];
+    }
 
     const normalized = sessions.map((s: SessionEntry) => {
       const parts = s.key.split(':');

@@ -46,6 +46,13 @@ router.post('/send', async (req: Request, res: Response) => {
     return;
   }
 
+  // Normalize agent IDs to full session key format:
+  // "main" -> "agent:main:main", "agent:main:main" stays as-is
+  const normalizedAgents = agents.map((a) => {
+    if (a.startsWith('agent:')) return a;
+    return `agent:${a}:main`;
+  });
+
   // Set up SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -70,8 +77,10 @@ router.post('/send', async (req: Request, res: Response) => {
   // Collect replies from each agent in order
   const agentReplies: Array<{ agentId: string; content: string }> = [];
 
-  for (const agentId of agents) {
-    const otherAgents = agents.filter((a) => a !== agentId).join(', ');
+  for (let i = 0; i < normalizedAgents.length; i++) {
+    const agentId = normalizedAgents[i];
+    const displayId = agents[i]; // original user-facing name for SSE events
+    const otherAgents = agents.filter((_, j) => j !== i).join(', ');
 
     const systemMessage = {
       role: 'system' as const,
@@ -131,13 +140,13 @@ router.post('/send', async (req: Request, res: Response) => {
         }
       }
 
-      agentReplies.push({ agentId, content });
-      sendEvent({ agentId, content, done: false });
+      agentReplies.push({ agentId: displayId, content });
+      sendEvent({ agentId: displayId, content, done: false });
 
     } catch (err) {
       console.error(`Group chat: unexpected error for agent ${agentId}:`, err);
-      agentReplies.push({ agentId, content: '[Error]' });
-      sendEvent({ agentId, content: '[Error]', done: false });
+      agentReplies.push({ agentId: displayId, content: '[Error]' });
+      sendEvent({ agentId: displayId, content: '[Error]', done: false });
     }
   }
 
