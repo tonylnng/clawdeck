@@ -393,27 +393,48 @@ function SessionsDropdown({ sessions, onSelect, onClose }: SessionsDropdownProps
   }
 
   return (
-    <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto">
+    <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto min-w-[320px]">
+      {/* Header */}
+      <div className="px-2 py-1.5 border-b bg-muted/40 flex-shrink-0">
+        <span className="text-[10px] text-muted-foreground font-medium">
+          {sessions.length} session{sessions.length !== 1 ? 's' : ''} — sorted by last active
+        </span>
+      </div>
       <div className="p-1">
         {sessions.map((s) => (
           <button
             key={s.key}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-left text-xs hover:bg-accent transition-colors"
+            className="w-full flex items-start gap-2 px-3 py-2 rounded-md text-left hover:bg-accent transition-colors"
             onClick={() => {
               onSelect(s.key, s.label);
               onClose();
             }}
           >
-            <Radio className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            <Radio className="h-3 w-3 text-muted-foreground flex-shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{s.label}</div>
-              <div className="text-muted-foreground truncate font-mono text-[10px]">{s.key}</div>
+              {/* Row 1: label + channel badge */}
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-xs font-medium truncate">{s.label}</span>
+                {s.channel && s.channel !== 'unknown' && (
+                  <span className={`px-1.5 py-0.5 rounded border text-[9px] font-medium flex-shrink-0 ${channelBadgeColor(s.channel)}`}>
+                    {s.channel}
+                  </span>
+                )}
+              </div>
+              {/* Row 2: session ID */}
+              <div className="text-[10px] text-muted-foreground font-mono truncate">{s.key}</div>
+              {/* Row 3: last active */}
+              {s.updatedAt && (
+                <div className="text-[10px] text-muted-foreground mt-0.5">
+                  Last active: {new Date(s.updatedAt).toLocaleString([], {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </div>
+              )}
             </div>
-            {s.channel && (
-              <span className={`px-1.5 py-0.5 rounded border text-[10px] font-medium flex-shrink-0 ${channelBadgeColor(s.channel)}`}>
-                {s.channel}
-              </span>
-            )}
           </button>
         ))}
       </div>
@@ -1489,6 +1510,8 @@ export default function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeFileTabRef = useRef<string>('');
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // tabsRef: always points to current tabs to avoid stale closures in callbacks
+  const tabsRef = useRef<ChatTab[]>([]);
 
   // ── Init ────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1516,6 +1539,11 @@ export default function ChatPage() {
     if (tabs.length === 0) return;
     scheduleSave(tabs, activeTab);
   }, [tabs, activeTab, scheduleSave]);
+
+  // Keep tabsRef in sync so callbacks always read fresh state
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
 
   // ── Tab management ──────────────────────────────────────────────────────────
 
@@ -1593,12 +1621,14 @@ export default function ChatPage() {
   // ── Group Chat Send ─────────────────────────────────────────────────────────
 
   const sendGroupMessage = useCallback(async (tabId: string) => {
-    const tab = tabs.find((t) => t.id === tabId);
+    // Use tabsRef.current to always get fresh state (avoids stale closure)
+    const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab || !tab.input.trim() || tab.streaming) return;
     if (!tab.groupAgents || tab.groupAgents.length < 2) return;
 
     const userContent = tab.input.trim();
     const isFirstMessage = tab.messages.length === 0;
+    const groupAgents = tab.groupAgents;
 
     const userMsg: Message = {
       id: `msg-${Date.now()}-user`,
@@ -1629,7 +1659,7 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          agents: tab.groupAgents,
+          agents: groupAgents,
           message: prompt,
           history: historyPayload,
         }),
@@ -1663,7 +1693,7 @@ export default function ChatPage() {
             };
             if (event.done) continue;
             if (event.agentId && event.content !== undefined) {
-              const agentIdx = (tab.groupAgents || []).indexOf(event.agentId);
+              const agentIdx = groupAgents.indexOf(event.agentId);
               const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
               const agentMsg: Message = {
                 id: `msg-${Date.now()}-${event.agentId}-${Math.random()}`,
@@ -1686,8 +1716,8 @@ export default function ChatPage() {
     };
 
     try {
-      // Get current messages (before user message added) as history
-      const currentTab = tabs.find((t) => t.id === tabId);
+      // Snapshot history before user message (read from tabsRef for freshness)
+      const currentTab = tabsRef.current.find((t) => t.id === tabId);
       const history = currentTab ? [...currentTab.messages] : [];
 
       // First round: respond to user message
@@ -1695,7 +1725,7 @@ export default function ChatPage() {
 
       // Auto Round: agents discuss among themselves
       if (tab.autoRound) {
-        const updatedTab = tabs.find((t) => t.id === tabId);
+        const updatedTab = tabsRef.current.find((t) => t.id === tabId);
         const allMessages = updatedTab ? updatedTab.messages : [];
         await sendRound('[Continue the discussion]', allMessages);
       }
@@ -1714,12 +1744,13 @@ export default function ChatPage() {
     } finally {
       updateTab(tabId, (t) => ({ ...t, streaming: false }));
     }
-  }, [tabs, updateTab]);
+  }, [updateTab]);
 
   // ── Send message (agent/channel) ────────────────────────────────────────────
 
   const sendMessage = useCallback(async (tabId: string) => {
-    const tab = tabs.find((t) => t.id === tabId);
+    // Use tabsRef.current to always get fresh state (avoids stale closure)
+    const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab || (!tab.input.trim() && !tab.pendingFile) || tab.streaming) return;
 
     // Channel mode: send via sessions API
@@ -1911,7 +1942,7 @@ export default function ChatPage() {
       abortRefs.current.delete(tabId);
       updateTab(tabId, (t) => ({ ...t, streaming: false }));
     }
-  }, [tabs, updateTab]);
+  }, [updateTab]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
 

@@ -44,6 +44,46 @@ function TypingIndicator() {
   );
 }
 
+// Copy button for code blocks — shown on hover
+function CopyCodeButton({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = code;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="absolute top-2 right-2 opacity-0 group-hover/code:opacity-100 transition-opacity bg-background/80 hover:bg-background border border-border rounded px-1.5 py-0.5 text-[10px] flex items-center gap-1 z-10"
+    >
+      {copied ? (
+        <><Check className="h-3 w-3 text-green-500" />Copied</>
+      ) : (
+        <><Copy className="h-3 w-3" />Copy</>
+      )}
+    </button>
+  );
+}
+
 export function ChatMessage({ message, isStreaming = false, onPin }: ChatMessageProps) {
   const { resolvedTheme } = useTheme();
   const isUser = message.role === 'user';
@@ -52,11 +92,25 @@ export function ChatMessage({ message, isStreaming = false, onPin }: ChatMessage
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(message.content);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(message.content);
+      } else {
+        // Fallback for non-HTTPS / older browsers
+        const textarea = document.createElement('textarea');
+        textarea.value = message.content;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // fallback
+      // Last resort: show error state
+      setCopied(false);
     }
   };
 
@@ -105,11 +159,27 @@ export function ChatMessage({ message, isStreaming = false, onPin }: ChatMessage
           )}
         >
           {isUser ? (
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            /* User message: render markdown but keep bubble style */
+            <div className="prose prose-sm max-w-none break-words [&_*]:text-primary-foreground prose-headings:font-semibold prose-strong:font-semibold prose-code:text-xs prose-a:underline">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.content}
+              </ReactMarkdown>
+            </div>
           ) : showTypingIndicator ? (
             <TypingIndicator />
           ) : (
-            <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+            <div className={cn(
+              'prose prose-sm dark:prose-invert max-w-none break-words',
+              'prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1',
+              'prose-p:leading-relaxed prose-p:my-1',
+              'prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5',
+              'prose-blockquote:border-l-4 prose-blockquote:border-primary/40 prose-blockquote:pl-3 prose-blockquote:italic prose-blockquote:text-muted-foreground',
+              'prose-table:text-xs prose-table:w-full',
+              'prose-th:bg-muted/60 prose-th:font-semibold prose-th:px-2 prose-th:py-1 prose-th:text-left',
+              'prose-td:px-2 prose-td:py-1 prose-td:border-t prose-td:border-border',
+              'prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
+              'prose-strong:font-semibold prose-code:text-xs'
+            )}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -119,14 +189,17 @@ export function ChatMessage({ message, isStreaming = false, onPin }: ChatMessage
 
                     if (isBlock) {
                       return (
-                        <SyntaxHighlighter
-                          style={resolvedTheme === 'dark' ? oneDark : oneLight}
-                          language={match[1]}
-                          PreTag="div"
-                          className="rounded-md text-xs !my-2"
-                        >
-                          {String(children).replace(/\n$/, '')}
-                        </SyntaxHighlighter>
+                        <div className="relative group/code">
+                          <CopyCodeButton code={String(children).replace(/\n$/, '')} />
+                          <SyntaxHighlighter
+                            style={resolvedTheme === 'dark' ? oneDark : oneLight}
+                            language={match[1]}
+                            PreTag="div"
+                            className="rounded-md text-xs !my-2"
+                          >
+                            {String(children).replace(/\n$/, '')}
+                          </SyntaxHighlighter>
+                        </div>
                       );
                     }
 

@@ -102,7 +102,7 @@ export default function DashboardLayout({
         <Image src="/logo.png" alt="ClawDeck" width={28} height={28} />
         <div>
           <span className="font-bold text-lg leading-none">ClawDeck</span>
-          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.5.0</span>
+          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.5.1</span>
         </div>
       </div>
 

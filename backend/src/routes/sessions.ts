@@ -112,21 +112,29 @@ router.get('/', async (_req: Request, res: Response) => {
       (raw?.result as { sessions?: SessionEntry[] })?.sessions ??
       [];
 
-    const normalized = sessions.map((s: SessionEntry) => ({
-      key: s.key,
-      model: s.model,
-      channel: s.channel,
-      updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : undefined,
-      createdAt: s.createdAt ? new Date(s.createdAt).toISOString() : undefined,
-      // Derive display label from key: agent:main:telegram:... -> "main / telegram"
-      label: (() => {
-        const parts = s.key.split(':');
-        if (parts[0] === 'agent' && parts.length >= 3) {
-          return `${parts[1]} / ${parts[2]}`;
-        }
-        return s.key;
-      })(),
-    }));
+    const normalized = sessions.map((s: SessionEntry) => {
+      const parts = s.key.split(':');
+      // Derive channel from session key parts[2] if not already set
+      const channel = s.channel || (parts.length >= 3 ? parts[2] : undefined);
+      return {
+        key: s.key,
+        model: s.model,
+        channel,
+        updatedAt: s.updatedAt ? new Date(s.updatedAt).toISOString() : undefined,
+        createdAt: s.createdAt ? new Date(s.createdAt).toISOString() : undefined,
+        // Derive display label from key: agent:main:telegram:... -> "main / telegram"
+        label: (() => {
+          if (parts[0] === 'agent' && parts.length >= 3) {
+            return `${parts[1]} / ${parts[2]}`;
+          }
+          return s.key;
+        })(),
+      };
+    }).sort((a, b) => {
+      const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return tb - ta; // descending: most recently active first
+    });
 
     res.json({ sessions: normalized });
   } catch (err) {
