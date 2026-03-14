@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { RefreshCw, MessageSquare, Bot, AlertCircle } from 'lucide-react';
+import { RefreshCw, MessageSquare, Bot, AlertCircle, ChevronDown, ChevronUp, Cpu } from 'lucide-react';
+
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface Agent {
   id: string;
@@ -22,6 +24,23 @@ interface AgentsResponse {
   [key: string]: unknown;
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MODEL_OPTIONS = [
+  { value: 'default', label: 'Default' },
+  { value: 'openrouter/anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+  { value: 'openrouter/anthropic/claude-opus-4-5', label: 'Claude Opus 4.5' },
+  { value: 'openrouter/google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  { value: 'openrouter/openai/gpt-4o', label: 'GPT-4o' },
+  { value: 'openrouter/minimax/minimax-m2-5', label: 'MiniMax M2.5' },
+] as const;
+
+type ModelValue = typeof MODEL_OPTIONS[number]['value'];
+
+const LS_MODEL_KEY = (agentId: string) => `clawdeck:model:${agentId}`;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function statusColor(status?: string) {
   switch (status?.toLowerCase()) {
     case 'active':
@@ -36,6 +55,188 @@ function statusColor(status?: string) {
       return 'bg-blue-500';
   }
 }
+
+function formatRelativeTime(iso?: string): string {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function shortModelName(value: string): string {
+  const found = MODEL_OPTIONS.find((m) => m.value === value);
+  return found ? found.label : value.split('/').pop() ?? value;
+}
+
+function getStoredModel(agentId: string): ModelValue {
+  if (typeof window === 'undefined') return 'default';
+  const stored = localStorage.getItem(LS_MODEL_KEY(agentId));
+  if (stored && MODEL_OPTIONS.some((m) => m.value === stored)) {
+    return stored as ModelValue;
+  }
+  return 'default';
+}
+
+function storeModel(agentId: string, model: ModelValue) {
+  localStorage.setItem(LS_MODEL_KEY(agentId), model);
+}
+
+// ── Agent Card ────────────────────────────────────────────────────────────────
+
+interface AgentCardProps {
+  agent: Agent;
+  allAgents: Agent[];
+  onOpenChat: (agentId: string) => void;
+}
+
+function AgentCard({ agent, allAgents, onOpenChat }: AgentCardProps) {
+  const [selectedModel, setSelectedModel] = useState<ModelValue>('default');
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  // Load model from localStorage on mount (client only)
+  useEffect(() => {
+    setSelectedModel(getStoredModel(agent.id));
+  }, [agent.id]);
+
+  const handleModelChange = (value: string) => {
+    const model = value as ModelValue;
+    setSelectedModel(model);
+    storeModel(agent.id, model);
+  };
+
+  // Derive health details from allAgents (sessions)
+  // Sessions with key starting with "agent:<agentId>:" belong to this agent
+  const sessionCount = allAgents.filter((a) => a.id === agent.id || a.name === agent.id).length;
+  const channelsActive = agent.channel ? [agent.channel] : [];
+
+  const isNonDefault = selectedModel !== 'default';
+
+  return (
+    <Card className="hover:shadow-md transition-shadow flex flex-col">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span
+              className={`flex-shrink-0 w-2.5 h-2.5 rounded-full ${statusColor(agent.status)}`}
+            />
+            <CardTitle className="text-base truncate">{agent.name || agent.id}</CardTitle>
+          </div>
+          {agent.status && (
+            <Badge variant="secondary" className="flex-shrink-0 text-xs capitalize">
+              {agent.status}
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+
+      <CardContent className="pt-0 flex flex-col gap-3 flex-1">
+        {/* Agent info */}
+        <div className="space-y-1 text-sm text-muted-foreground">
+          <p className="truncate">
+            <span className="font-medium">ID:</span> {agent.id}
+          </p>
+          {agent.channel && (
+            <p className="truncate">
+              <span className="font-medium">Channel:</span> {agent.channel}
+            </p>
+          )}
+          {agent.lastActive && (
+            <p className="truncate">
+              <span className="font-medium">Last active:</span>{' '}
+              {new Date(agent.lastActive).toLocaleString()}
+            </p>
+          )}
+        </div>
+
+        {/* Model Switcher */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <Cpu className="h-3.5 w-3.5" />
+            Model
+          </div>
+          <select
+            value={selectedModel}
+            onChange={(e) => handleModelChange(e.target.value)}
+            className="w-full text-xs border rounded-md px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {MODEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          {isNonDefault && (
+            <Badge
+              variant="outline"
+              className="text-xs font-mono truncate max-w-full"
+              title={selectedModel}
+            >
+              {shortModelName(selectedModel)}
+            </Badge>
+          )}
+        </div>
+
+        {/* Health Details toggle */}
+        <div>
+          <button
+            onClick={() => setDetailsOpen((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors w-full"
+          >
+            {detailsOpen
+              ? <ChevronUp className="h-3.5 w-3.5" />
+              : <ChevronDown className="h-3.5 w-3.5" />}
+            Details
+          </button>
+
+          {detailsOpen && (
+            <div className="mt-2 rounded-md border bg-muted/40 p-2.5 space-y-1.5 text-xs text-muted-foreground">
+              <div className="flex justify-between">
+                <span className="font-medium">Sessions</span>
+                <span>{sessionCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="font-medium">Channels active</span>
+                <span>
+                  {channelsActive.length > 0 ? channelsActive.join(', ') : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="font-medium">Last active</span>
+                <span>{formatRelativeTime(agent.lastActive)}</span>
+              </div>
+              {agent.model && (
+                <div className="flex justify-between">
+                  <span className="font-medium">Current model</span>
+                  <span className="truncate max-w-[140px] text-right" title={agent.model}>
+                    {agent.model.split('/').pop() ?? agent.model}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Chat button — pushed to bottom */}
+        <div className="mt-auto pt-1">
+          <Button
+            size="sm"
+            className="w-full"
+            onClick={() => onOpenChat(agent.id)}
+          >
+            <MessageSquare className="h-4 w-4 mr-2" />
+            Open Chat
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function AgentsPage() {
   const router = useRouter();
@@ -130,54 +331,12 @@ export default function AgentsPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {agents.map((agent) => (
-              <Card key={agent.id} className="hover:shadow-md transition-shadow">
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className={`flex-shrink-0 w-2.5 h-2.5 rounded-full ${statusColor(agent.status)}`}
-                      />
-                      <CardTitle className="text-base truncate">{agent.name || agent.id}</CardTitle>
-                    </div>
-                    {agent.status && (
-                      <Badge variant="secondary" className="flex-shrink-0 text-xs capitalize">
-                        {agent.status}
-                      </Badge>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="space-y-1 text-sm text-muted-foreground mb-4">
-                    <p className="truncate">
-                      <span className="font-medium">ID:</span> {agent.id}
-                    </p>
-                    {agent.model && (
-                      <p className="truncate">
-                        <span className="font-medium">Model:</span> {agent.model}
-                      </p>
-                    )}
-                    {agent.channel && (
-                      <p className="truncate">
-                        <span className="font-medium">Channel:</span> {agent.channel}
-                      </p>
-                    )}
-                    {agent.lastActive && (
-                      <p className="truncate">
-                        <span className="font-medium">Last active:</span>{' '}
-                        {new Date(agent.lastActive).toLocaleString()}
-                      </p>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    className="w-full"
-                    onClick={() => openChat(agent.id)}
-                  >
-                    <MessageSquare className="h-4 w-4 mr-2" />
-                    Open Chat
-                  </Button>
-                </CardContent>
-              </Card>
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                allAgents={agents}
+                onOpenChat={openChat}
+              />
             ))}
           </div>
         )}

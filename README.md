@@ -8,12 +8,14 @@
 
 ## Features
 
-- 🤖 **Agent Overview** — See all your OpenClaw agents and their status at a glance
+- 🤖 **Agent Overview** — See all your OpenClaw agents, health details, and switch models on the fly
 - 💬 **Multi-Agent Chat** — Chat with multiple agents simultaneously in tabs, with real-time SSE streaming
 - 📎 **File & Image Upload** — Send images and documents directly to agents
 - 📋 **Log Viewer** — Real-time Gateway and per-Agent log streaming with color-coded levels
 - 📁 **Workspace Browser** — Browse, view, and edit agent workspace files with Markdown rendering
 - 🧠 **Memory Browser** — Search, view, and delete agent memories (LanceDB)
+- 📊 **Analytics Dashboard** — Token usage, session stats, and model distribution per agent
+- 🔑 **Auth Profile Editor** — View redacted API keys, check cooldown status, and reset rate-limit cooldowns via GUI
 - 🔐 **Secure by Default** — JWT auth, API key auto-redaction, file blacklist protection
 - 🌓 **Dark / Light Mode** — Follows system preference, manually toggleable
 - 📱 **Mobile Responsive** — Works on phones and tablets
