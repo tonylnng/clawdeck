@@ -19,13 +19,19 @@ import {
   Brain,
   Settings,
   BarChart2,
+  Search,
+  FlaskConical,
+  Clock,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { href: '/dashboard/agents', icon: Bot, label: '🤖 Agents' },
   { href: '/dashboard/chat', icon: MessageSquare, label: '💬 Chat' },
+  { href: '/dashboard/search', icon: Search, label: '🔍 Search' },
   { href: '/dashboard/logs', icon: FileText, label: '📋 Logs' },
   { href: '/dashboard/analytics', icon: BarChart2, label: '📊 Analytics' },
+  { href: '/dashboard/playground', icon: FlaskConical, label: '🧪 Playground' },
+  { href: '/dashboard/cron', icon: Clock, label: '⏰ Cron Jobs' },
   { href: '/dashboard/workspace', icon: Folder, label: '📁 Workspace' },
   { href: '/dashboard/memory', icon: Brain, label: '🧠 Memory' },
   { href: '/dashboard/setup', icon: Settings, label: '⚙️ Setup' },

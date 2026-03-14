@@ -16,6 +16,9 @@
 - 🧠 **Memory Browser** — Search, view, and delete agent memories (LanceDB)
 - 📊 **Analytics Dashboard** — Token usage, session stats, and model distribution per agent
 - 🔑 **Auth Profile Editor** — View redacted API keys, check cooldown status, and reset rate-limit cooldowns via GUI
+- 🔍 **Conversation Search** — Search across all agent sessions with export to Markdown
+- 🧪 **Prompt Playground** — Test prompts against any agent/model without opening a full chat session
+- ⏰ **Cron Job Manager** — View, add, edit, enable/disable, and delete OpenClaw cron jobs via GUI
 - 🔐 **Secure by Default** — JWT auth, API key auto-redaction, file blacklist protection
 - 🌓 **Dark / Light Mode** — Follows system preference, manually toggleable
 - 📱 **Mobile Responsive** — Works on phones and tablets

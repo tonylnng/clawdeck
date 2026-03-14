@@ -12,6 +12,9 @@ import memoryRouter from './routes/memory';
 import configRouter from './routes/config';
 import analyticsRouter from './routes/analytics';
 import authProfilesRouter from './routes/auth-profiles';
+import searchRouter from './routes/search';
+import playgroundRouter from './routes/playground';
+import cronRouter from './routes/cron';
 import { redactMiddleware } from './middleware/redact';
 
 dotenv.config();
@@ -60,6 +63,9 @@ app.use('/api/memory', memoryRouter);
 app.use('/api/config', configRouter);
 app.use('/api/auth-profiles', authProfilesRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/search', searchRouter);
+app.use('/api/playground', playgroundRouter);
+app.use('/api/cron', cronRouter);
 
 // Health check
 app.get('/health', (_req, res) => {
