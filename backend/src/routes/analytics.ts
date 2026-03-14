@@ -364,4 +364,103 @@ router.get('/errors', async (_req: Request, res: Response) => {
   }
 });
 
+// ─── GET /api/analytics/latency ───────────────────────────────────────────────
+// Returns avg response latency (ms) per model and per hour-of-day from session jsonl files
+
+router.get('/latency', async (_req: Request, res: Response) => {
+  try {
+    // model → hour (0-23) → { totalMs, count }
+    const modelHourMap = new Map<string, Map<number, { totalMs: number; count: number }>>();
+    // agent → latency buckets (for per-agent heatmap)
+    const agentHourMap = new Map<string, Map<number, { totalMs: number; count: number }>>();
+
+    for (const agentId of CLAWDECK_AGENTS) {
+      const standardDir = `/home/tonic/.openclaw/agents/${agentId}/sessions`;
+      if (!fs.existsSync(standardDir)) continue;
+
+      const files = fs.readdirSync(standardDir)
+        .filter((f) => f.endsWith('.jsonl') && !f.includes('.reset'))
+        .map((f) => path.join(standardDir, f));
+
+      for (const file of files) {
+        const events: JsonlMessage[] = [];
+
+        await new Promise<void>((resolve) => {
+          const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+          rl.on('line', (line) => {
+            if (!line.trim()) return;
+            try {
+              const obj = JSON.parse(line) as JsonlMessage & { message?: { role?: string }; id?: string; parentId?: string };
+              events.push(obj);
+            } catch { /* skip */ }
+          });
+          rl.on('close', resolve);
+          rl.on('error', resolve);
+        });
+
+        // Calculate latency: assistant_message.timestamp - user_message.timestamp (paired by parentId)
+        // Events with type=message contain role info
+        const userEvents = events.filter((e: JsonlMessage & { message?: { role?: string } }) =>
+          (e as JsonlMessage & { message?: { role?: string } }).message?.role === 'user' && e.timestamp
+        );
+        const assistantEvents = events.filter((e: JsonlMessage & { message?: { role?: string } }) =>
+          (e as JsonlMessage & { message?: { role?: string } }).message?.role === 'assistant' && e.timestamp && (e as JsonlMessage).model
+        );
+
+        // Simple pairing: match consecutive user→assistant pairs by index
+        for (let i = 0; i < Math.min(userEvents.length, assistantEvents.length); i++) {
+          const userTs = new Date(userEvents[i].timestamp!).getTime();
+          const assistTs = new Date(assistantEvents[i].timestamp!).getTime();
+          if (isNaN(userTs) || isNaN(assistTs)) continue;
+          const latencyMs = assistTs - userTs;
+          if (latencyMs < 0 || latencyMs > 300_000) continue; // skip bogus values
+
+          const hour = new Date(assistantEvents[i].timestamp!).getUTCHours();
+          const model = assistantEvents[i].model ?? 'unknown';
+
+          // Model map
+          if (!modelHourMap.has(model)) modelHourMap.set(model, new Map());
+          const mh = modelHourMap.get(model)!;
+          const existing = mh.get(hour) ?? { totalMs: 0, count: 0 };
+          mh.set(hour, { totalMs: existing.totalMs + latencyMs, count: existing.count + 1 });
+
+          // Agent map
+          if (!agentHourMap.has(agentId)) agentHourMap.set(agentId, new Map());
+          const ah = agentHourMap.get(agentId)!;
+          const existingA = ah.get(hour) ?? { totalMs: 0, count: 0 };
+          ah.set(hour, { totalMs: existingA.totalMs + latencyMs, count: existingA.count + 1 });
+        }
+      }
+    }
+
+    // Build heatmap: model → array[24] of avg latency (ms) or null
+    const modelHeatmap: Record<string, (number | null)[]> = {};
+    modelHourMap.forEach((hourMap, model) => {
+      const row: (number | null)[] = Array(24).fill(null);
+      hourMap.forEach((val, hour) => {
+        row[hour] = Math.round(val.totalMs / val.count);
+      });
+      modelHeatmap[model] = row;
+    });
+
+    const agentHeatmap: Record<string, (number | null)[]> = {};
+    agentHourMap.forEach((hourMap, agentId) => {
+      const row: (number | null)[] = Array(24).fill(null);
+      hourMap.forEach((val, hour) => {
+        row[hour] = Math.round(val.totalMs / val.count);
+      });
+      agentHeatmap[agentId] = row;
+    });
+
+    res.json({
+      modelHeatmap,
+      agentHeatmap,
+      hours: Array.from({ length: 24 }, (_, i) => i),
+    });
+  } catch (err) {
+    console.error('Failed to fetch analytics/latency:', err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 export default router;

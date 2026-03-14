@@ -23,20 +23,24 @@ import {
   FlaskConical,
   Clock,
   Radio,
+  Bell,
+  Package,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { href: '/dashboard/agents',    icon: Bot,          label: '🤖 Agents',    shortcut: 'g+a' },
-  { href: '/dashboard/chat',      icon: MessageSquare, label: '💬 Chat',     shortcut: 'g+c' },
-  { href: '/dashboard/search',    icon: Search,        label: '🔍 Search',   shortcut: 'g+s' },
-  { href: '/dashboard/logs',      icon: FileText,      label: '📋 Logs',     shortcut: 'g+l' },
-  { href: '/dashboard/monitor',   icon: Radio,         label: '📡 Monitor',  shortcut: 'g+o' },
-  { href: '/dashboard/analytics', icon: BarChart2,     label: '📊 Analytics', shortcut: 'g+n' },
-  { href: '/dashboard/playground',icon: FlaskConical,  label: '🧪 Playground', shortcut: 'g+p' },
-  { href: '/dashboard/cron',      icon: Clock,         label: '⏰ Cron Jobs', shortcut: 'g+r' },
-  { href: '/dashboard/workspace', icon: Folder,        label: '📁 Workspace', shortcut: 'g+w' },
-  { href: '/dashboard/memory',    icon: Brain,         label: '🧠 Memory',   shortcut: 'g+m' },
-  { href: '/dashboard/setup',     icon: Settings,      label: '⚙️ Setup',    shortcut: 'g+u' },
+  { href: '/dashboard/agents',        icon: Bot,          label: '🤖 Agents',        shortcut: 'g+a' },
+  { href: '/dashboard/chat',          icon: MessageSquare, label: '💬 Chat',          shortcut: 'g+c' },
+  { href: '/dashboard/search',        icon: Search,        label: '🔍 Search',        shortcut: 'g+s' },
+  { href: '/dashboard/logs',          icon: FileText,      label: '📋 Logs',          shortcut: 'g+l' },
+  { href: '/dashboard/monitor',       icon: Radio,         label: '📡 Monitor',       shortcut: 'g+o' },
+  { href: '/dashboard/notifications', icon: Bell,          label: '🔔 Notifications', shortcut: 'g+b' },
+  { href: '/dashboard/analytics',     icon: BarChart2,     label: '📊 Analytics',     shortcut: 'g+n' },
+  { href: '/dashboard/playground',    icon: FlaskConical,  label: '🧪 Playground',    shortcut: 'g+p' },
+  { href: '/dashboard/cron',          icon: Clock,         label: '⏰ Cron Jobs',     shortcut: 'g+r' },
+  { href: '/dashboard/skills',        icon: Package,       label: '🧩 Skills',        shortcut: 'g+k' },
+  { href: '/dashboard/workspace',     icon: Folder,        label: '📁 Workspace',     shortcut: 'g+w' },
+  { href: '/dashboard/memory',        icon: Brain,         label: '🧠 Memory',        shortcut: 'g+m' },
+  { href: '/dashboard/setup',         icon: Settings,      label: '⚙️ Setup',         shortcut: 'g+u' },
 ];
 
 export default function DashboardLayout({
@@ -104,7 +108,7 @@ export default function DashboardLayout({
         <Image src="/logo.png" alt="ClawDeck" width={28} height={28} />
         <div>
           <span className="font-bold text-lg leading-none">ClawDeck</span>
-          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.6.0</span>
+          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.8.0</span>
         </div>
       </div>
 

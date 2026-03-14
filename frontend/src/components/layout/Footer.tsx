@@ -1,4 +1,4 @@
-const VERSION = 'v1.6.0';
+const VERSION = 'v1.8.0';
 
 export function Footer() {
   return (

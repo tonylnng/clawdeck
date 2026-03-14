@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   RefreshCw, Bot, MessageSquare, Hash, Cpu, TrendingUp,
-  AlertTriangle, DollarSign,
+  AlertTriangle, DollarSign, Zap,
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -59,6 +59,12 @@ interface ErrorBucket {
 interface ErrorsData {
   buckets: ErrorBucket[];
   total: number;
+}
+
+interface LatencyData {
+  modelHeatmap: Record<string, (number | null)[]>;
+  agentHeatmap: Record<string, (number | null)[]>;
+  hours: number[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -232,6 +238,75 @@ function ErrorChart({ data }: { data: ErrorBucket[] }) {
   );
 }
 
+// ─── Latency Heatmap ──────────────────────────────────────────────────────────
+
+function latencyColor(ms: number | null): string {
+  if (ms === null) return 'bg-muted/30';
+  if (ms < 2000) return 'bg-green-500';
+  if (ms < 5000) return 'bg-yellow-400';
+  if (ms < 10000) return 'bg-orange-500';
+  return 'bg-red-500';
+}
+
+function latencyOpacity(ms: number | null, max: number): string {
+  if (ms === null || max === 0) return 'opacity-10';
+  const ratio = Math.min(ms / max, 1);
+  if (ratio < 0.2) return 'opacity-20';
+  if (ratio < 0.4) return 'opacity-40';
+  if (ratio < 0.6) return 'opacity-60';
+  if (ratio < 0.8) return 'opacity-80';
+  return 'opacity-100';
+}
+
+function LatencyHeatmap({ data, label }: { data: Record<string, (number | null)[]>; label: string }) {
+  const rows = Object.entries(data);
+  if (rows.length === 0) return <p className="text-sm text-muted-foreground text-center py-8">No latency data — requires message exchanges in session files</p>;
+
+  const allValues = rows.flatMap(([, row]) => row).filter((v): v is number => v !== null);
+  const maxMs = allValues.length > 0 ? Math.max(...allValues) : 1;
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="min-w-[600px]">
+        {/* Hour labels */}
+        <div className="flex items-center mb-1">
+          <div className="w-28 flex-shrink-0" />
+          <div className="flex flex-1 gap-px">
+            {Array.from({ length: 24 }, (_, h) => (
+              <div key={h} className="flex-1 text-center text-[9px] text-muted-foreground">{h % 6 === 0 ? `${h}h` : ''}</div>
+            ))}
+          </div>
+        </div>
+        {/* Rows */}
+        {rows.map(([name, row]) => (
+          <div key={name} className="flex items-center gap-1 mb-1">
+            <div className="w-28 flex-shrink-0 text-xs font-mono text-muted-foreground truncate text-right pr-2">{name}</div>
+            <div className="flex flex-1 gap-px">
+              {row.map((ms, h) => (
+                <div
+                  key={h}
+                  className={`flex-1 h-6 rounded-sm ${latencyColor(ms)} ${latencyOpacity(ms, maxMs)} cursor-default transition-opacity`}
+                  title={ms !== null ? `${name} at ${h}:00 — avg ${ms}ms (${(ms/1000).toFixed(1)}s)` : `${name} at ${h}:00 — no data`}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+        {/* Legend */}
+        <div className="flex items-center gap-3 mt-2 pl-28">
+          {[['< 2s', 'bg-green-500'], ['2–5s', 'bg-yellow-400'], ['5–10s', 'bg-orange-500'], ['> 10s', 'bg-red-500'], ['No data', 'bg-muted/30']].map(([label, cls]) => (
+            <div key={label} className="flex items-center gap-1">
+              <div className={`w-3 h-3 rounded-sm ${cls}`} />
+              <span className="text-[10px] text-muted-foreground">{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <p className="text-[10px] text-muted-foreground mt-2 pl-28">Hover cells for exact latency. {label} · UTC hours.</p>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AnalyticsPage() {
@@ -241,6 +316,8 @@ export default function AnalyticsPage() {
   const [models, setModels] = useState<ModelsData | null>(null);
   const [timeseries, setTimeseries] = useState<TimeseriesData | null>(null);
   const [errors, setErrors] = useState<ErrorsData | null>(null);
+  const [latency, setLatency] = useState<LatencyData | null>(null);
+  const [latencyView, setLatencyView] = useState<'model' | 'agent'>('model');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -250,26 +327,29 @@ export default function AnalyticsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [usageRes, modelsRes, tsRes, errRes] = await Promise.all([
+      const [usageRes, modelsRes, tsRes, errRes, latRes] = await Promise.all([
         fetch('/api/analytics/usage', { credentials: 'include' }),
         fetch('/api/analytics/models', { credentials: 'include' }),
         fetch('/api/analytics/timeseries', { credentials: 'include' }),
         fetch('/api/analytics/errors', { credentials: 'include' }),
+        fetch('/api/analytics/latency', { credentials: 'include' }),
       ]);
 
       if (usageRes.status === 401) { router.push('/login'); return; }
 
-      const [usageData, modelsData, tsData, errData] = await Promise.all([
+      const [usageData, modelsData, tsData, errData, latData] = await Promise.all([
         usageRes.ok ? usageRes.json() as Promise<UsageData> : Promise.resolve(null),
         modelsRes.ok ? modelsRes.json() as Promise<ModelsData> : Promise.resolve(null),
         tsRes.ok ? tsRes.json() as Promise<TimeseriesData> : Promise.resolve(null),
         errRes.ok ? errRes.json() as Promise<ErrorsData> : Promise.resolve(null),
+        latRes.ok ? latRes.json() as Promise<LatencyData> : Promise.resolve(null),
       ]);
 
       setUsage(usageData);
       setModels(modelsData);
       setTimeseries(tsData);
       setErrors(errData);
+      setLatency(latData);
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -483,6 +563,32 @@ export default function AnalyticsPage() {
                     </li>
                   ))}
                 </ul>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Latency Heatmap */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+              <Zap className="h-3.5 w-3.5" />
+              Response Latency Heatmap (by hour)
+            </h2>
+            <div className="flex gap-1">
+              <Button variant={latencyView === 'model' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setLatencyView('model')}>By Model</Button>
+              <Button variant={latencyView === 'agent' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setLatencyView('agent')}>By Agent</Button>
+            </div>
+          </div>
+          <Card>
+            <CardContent className="pt-4 px-4 pb-4">
+              {!latency ? (
+                <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
+              ) : (
+                <LatencyHeatmap
+                  data={latencyView === 'model' ? latency.modelHeatmap : latency.agentHeatmap}
+                  label={latencyView === 'model' ? 'Per model' : 'Per agent'}
+                />
               )}
             </CardContent>
           </Card>
