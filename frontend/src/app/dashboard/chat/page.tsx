@@ -386,16 +386,14 @@ interface SessionsDropdownProps {
 function SessionsDropdown({ sessions, onSelect, onClose }: SessionsDropdownProps) {
   if (sessions.length === 0) {
     return (
-      <div className="fixed mt-1 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-[200] p-4 w-[480px]">
+      <div className="absolute right-0 top-full mt-1 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-50 p-4 w-72">
         <p className="text-xs text-muted-foreground text-center">No sessions found</p>
       </div>
     );
   }
 
   return (
-    <div className="fixed mt-1 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-[200] w-[520px] max-h-[60vh] flex flex-col"
-      style={{ top: 'auto', left: 'auto' }}
-    >
+    <div className="absolute right-0 top-full mt-1 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-50 w-[480px] max-w-[90vw] max-h-[60vh] flex flex-col">
       {/* Header */}
       <div className="px-3 py-2 border-b bg-muted/40 flex-shrink-0 flex items-center justify-between">
         <span className="text-xs text-muted-foreground font-medium">
@@ -1747,12 +1745,34 @@ function ChatPage() {
             const event = JSON.parse(jsonStr) as {
               agentId?: string;
               content?: string;
+              thinking?: boolean;
               done?: boolean;
             };
             if (event.done) continue;
-            if (event.agentId && event.content !== undefined) {
+            if (event.agentId && event.thinking) {
+              // Show typing indicator for this agent
               const agentIdx = agents.indexOf(event.agentId);
               const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
+              const thinkingId = `thinking-${event.agentId}`;
+              updateTab(tabId, (t) => {
+                // Remove any existing thinking bubble for this agent
+                const filtered = t.messages.filter(m => m.id !== thinkingId);
+                return {
+                  ...t,
+                  messages: [...filtered, {
+                    id: thinkingId,
+                    role: 'assistant' as const,
+                    content: '',  // empty = typing indicator shown by ChatMessage
+                    timestamp: new Date(),
+                    agentId: event.agentId,
+                    color,
+                  }],
+                };
+              });
+            } else if (event.agentId && event.content !== undefined) {
+              const agentIdx = agents.indexOf(event.agentId);
+              const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
+              const thinkingId = `thinking-${event.agentId}`;
               const agentMsg: Message = {
                 id: `msg-${Date.now()}-${event.agentId}-${Math.random()}`,
                 role: 'assistant',
@@ -1763,7 +1783,8 @@ function ChatPage() {
               };
               updateTab(tabId, (t) => ({
                 ...t,
-                messages: [...t.messages, agentMsg],
+                // Replace thinking bubble with actual reply
+                messages: [...t.messages.filter(m => m.id !== thinkingId), agentMsg],
               }));
             }
           } catch {

@@ -7,7 +7,7 @@ router.use(requireAuth);
 
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
-const AGENT_TIMEOUT_MS = 30000;
+const AGENT_TIMEOUT_MS = 60000; // 60s per agent (some models are slow)
 
 interface HistoryMessage {
   role: string;
@@ -81,6 +81,9 @@ router.post('/send', async (req: Request, res: Response) => {
     const agentId = normalizedAgents[i];
     const displayId = agents[i]; // original user-facing name for SSE events
     const otherAgents = agents.filter((_, j) => j !== i).join(', ');
+
+    // Signal to frontend that this agent is thinking
+    sendEvent({ agentId: displayId, thinking: true, done: false });
 
     const systemMessage = {
       role: 'system' as const,
