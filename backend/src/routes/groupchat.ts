@@ -105,6 +105,7 @@ router.post('/send', async (req: Request, res: Response) => {
             model: model || 'default',
             stream: false,
             messages,
+            session: agentId,
           }),
           signal: controller.signal,
         });
