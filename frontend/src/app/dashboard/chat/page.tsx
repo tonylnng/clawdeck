@@ -10,7 +10,7 @@ import { ChatMessage } from '@/components/chat/ChatMessage';
 import {
   Plus, X, Send, Loader2, Bot, Paperclip, FileText,
   Image as ImageIcon, Trash2, LayoutTemplate, Rows3,
-  Pin, ChevronDown, ChevronUp,
+  Pin, ChevronDown, ChevronUp, Radio, ChevronDown as ChevronDownIcon,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -21,6 +21,7 @@ interface Message {
   content: string;
   timestamp: Date;
   pinned?: boolean;
+  source?: string; // channel source badge e.g. "telegram"
   attachment?: {
     type: 'image' | 'file';
     name: string;
@@ -37,6 +38,10 @@ interface ChatTab {
   input: string;
   pendingFile: File | null;
   pendingFilePreview: string | null;
+  // Channel mode fields
+  mode: 'agent' | 'channel';
+  sessionKey?: string;
+  lastPollTimestamp?: string;
 }
 
 // ─── LocalStorage Schema ───────────────────────────────────────────────────────
@@ -46,6 +51,7 @@ interface PersistedMessage {
   content: string;
   timestamp: string;
   pinned?: boolean;
+  source?: string;
   attachment?: { type: 'image' | 'file'; name: string; preview?: string };
 }
 
@@ -54,6 +60,8 @@ interface PersistedTab {
   agentId: string;
   label: string;
   messages: PersistedMessage[];
+  mode?: 'agent' | 'channel';
+  sessionKey?: string;
 }
 
 const LS_KEY = 'clawdeck-chat-tabs';
@@ -61,6 +69,7 @@ const LS_ACTIVE_KEY = 'clawdeck-chat-active';
 const MAX_TABS = 20;
 const MAX_MESSAGES_PER_TAB = 100;
 const MAX_SPLIT_PANELS = 8;
+const POLL_INTERVAL_MS = 5000;
 
 // ─── Quick Commands ───────────────────────────────────────────────────────────
 
@@ -92,6 +101,7 @@ function createTab(agentId: string = ''): ChatTab {
     input: '',
     pendingFile: null,
     pendingFilePreview: null,
+    mode: 'agent',
   };
 }
 
@@ -116,6 +126,16 @@ function splitGridClass(count: number): string {
   return 'grid-cols-4';
 }
 
+function channelBadgeColor(source?: string): string {
+  const map: Record<string, string> = {
+    telegram: 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20',
+    whatsapp: 'bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20',
+    discord: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20',
+    slack: 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20',
+  };
+  return map[source?.toLowerCase() || ''] || 'bg-muted text-muted-foreground border-border';
+}
+
 // ─── Persistence helpers ───────────────────────────────────────────────────────
 
 function saveTabs(tabs: ChatTab[], activeTabId: string) {
@@ -124,12 +144,15 @@ function saveTabs(tabs: ChatTab[], activeTabId: string) {
       id: tab.id,
       agentId: tab.agentId,
       label: tab.label,
+      mode: tab.mode,
+      sessionKey: tab.sessionKey,
       messages: tab.messages.slice(-MAX_MESSAGES_PER_TAB).map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content,
         timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp),
         pinned: m.pinned,
+        source: m.source,
         attachment: m.attachment,
       })),
     }));
@@ -157,12 +180,15 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
       input: '',
       pendingFile: null,
       pendingFilePreview: null,
+      mode: pt.mode ?? 'agent',
+      sessionKey: pt.sessionKey,
       messages: (pt.messages ?? []).map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content,
         timestamp: new Date(m.timestamp),
         pinned: m.pinned ?? false,
+        source: m.source,
         attachment: m.attachment,
       })),
     }));
@@ -272,6 +298,59 @@ function QuickCommandsDropdown({ inputValue, onSelect, onClose, selectedIndex }:
   );
 }
 
+// ─── Sessions Dropdown ────────────────────────────────────────────────────────
+
+interface SessionItem {
+  key: string;
+  label: string;
+  channel?: string;
+  updatedAt?: string;
+}
+
+interface SessionsDropdownProps {
+  sessions: SessionItem[];
+  onSelect: (key: string, label: string) => void;
+  onClose: () => void;
+}
+
+function SessionsDropdown({ sessions, onSelect, onClose }: SessionsDropdownProps) {
+  if (sessions.length === 0) {
+    return (
+      <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 p-3">
+        <p className="text-xs text-muted-foreground text-center">No sessions found</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 max-h-48 overflow-y-auto">
+      <div className="p-1">
+        {sessions.map((s) => (
+          <button
+            key={s.key}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-left text-xs hover:bg-accent transition-colors"
+            onClick={() => {
+              onSelect(s.key, s.label);
+              onClose();
+            }}
+          >
+            <Radio className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="font-medium truncate">{s.label}</div>
+              <div className="text-muted-foreground truncate font-mono text-[10px]">{s.key}</div>
+            </div>
+            {s.channel && (
+              <span className={`px-1.5 py-0.5 rounded border text-[10px] font-medium flex-shrink-0 ${channelBadgeColor(s.channel)}`}>
+                {s.channel}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── SinglePanel ──────────────────────────────────────────────────────────────
 
 interface SinglePanelProps {
@@ -297,10 +376,177 @@ function SinglePanel({
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const [showCommands, setShowCommands] = useState(false);
   const [commandSelectedIdx, setCommandSelectedIdx] = useState(0);
+  // Channel mode state
+  const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [showSessions, setShowSessions] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionKeyInput, setSessionKeyInput] = useState(tab.sessionKey || '');
+  const sessionKeyInputRef = useRef<string>(tab.sessionKey || '');
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isChannelMode = tab.mode === 'channel';
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [tab.messages]);
+
+  // Keep sessionKeyInput in sync when tab.sessionKey changes externally
+  useEffect(() => {
+    if (tab.sessionKey && tab.sessionKey !== sessionKeyInputRef.current) {
+      setSessionKeyInput(tab.sessionKey);
+      sessionKeyInputRef.current = tab.sessionKey;
+    }
+  }, [tab.sessionKey]);
+
+  // Start/stop polling when session key or mode changes
+  useEffect(() => {
+    if (tab.mode === 'channel' && tab.sessionKey) {
+      startPolling(tab.id, tab.sessionKey);
+    } else {
+      stopPolling();
+    }
+    return () => stopPolling();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.mode, tab.sessionKey, tab.id]);
+
+  const stopPolling = () => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  };
+
+  const startPolling = (tabId: string, sessionKey: string) => {
+    stopPolling();
+    pollingRef.current = setInterval(async () => {
+      try {
+        // We read lastPollTimestamp from the tab by accessing current state
+        // Use a callback approach via the update function
+        onUpdateTab(tabId, (t) => {
+          const since = t.lastPollTimestamp;
+          // Fire async poll (can't await in updater, so fire and forget)
+          void pollMessages(tabId, sessionKey, since);
+          return t; // no immediate change
+        });
+      } catch {
+        // ignore polling errors
+      }
+    }, POLL_INTERVAL_MS);
+  };
+
+  const pollMessages = async (tabId: string, sessionKey: string, since?: string) => {
+    try {
+      const url = since
+        ? `/api/sessions/${encodeURIComponent(sessionKey)}/poll?since=${encodeURIComponent(since)}`
+        : `/api/sessions/${encodeURIComponent(sessionKey)}/poll`;
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json() as { messages?: NormalizedMsg[] };
+      const newMsgs = data.messages || [];
+      if (newMsgs.length === 0) return;
+
+      onUpdateTab(tabId, (t) => {
+        const existingIds = new Set(t.messages.map((m) => m.id));
+        const toAdd: Message[] = newMsgs
+          .filter((m: NormalizedMsg) => !existingIds.has(m.id))
+          .map((m: NormalizedMsg) => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+            source: m.source,
+          }));
+
+        if (toAdd.length === 0) return t;
+
+        const lastMsg = toAdd[toAdd.length - 1];
+        return {
+          ...t,
+          messages: [...t.messages, ...toAdd],
+          lastPollTimestamp: lastMsg.timestamp.toISOString(),
+        };
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  interface NormalizedMsg {
+    id: string;
+    role: string;
+    content: string;
+    timestamp: string;
+    source?: string;
+  }
+
+  const loadSessionHistory = async (tabId: string, sessionKey: string) => {
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionKey)}/history?limit=50`,
+        { credentials: 'include' }
+      );
+      if (!res.ok) return;
+      const data = await res.json() as { messages?: NormalizedMsg[] };
+      const msgs = data.messages || [];
+
+      const lastMsg = msgs[msgs.length - 1];
+
+      onUpdateTab(tabId, (t) => ({
+        ...t,
+        messages: msgs.map((m: NormalizedMsg) => ({
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          timestamp: new Date(m.timestamp),
+          source: m.source,
+        })),
+        sessionKey,
+        lastPollTimestamp: lastMsg?.timestamp,
+        label: sessionKey.split(':').slice(1, 3).join(' / ') || sessionKey,
+      }));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleLoadSessions = async () => {
+    setLoadingSessions(true);
+    try {
+      const res = await fetch('/api/sessions', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json() as { sessions?: SessionItem[] };
+      setSessions(data.sessions || []);
+      setShowSessions(true);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const handleSelectSession = (key: string, label: string) => {
+    setSessionKeyInput(key);
+    sessionKeyInputRef.current = key;
+    onUpdateTab(tab.id, (t) => ({
+      ...t,
+      sessionKey: key,
+      label: label,
+      messages: [],
+    }));
+    void loadSessionHistory(tab.id, key);
+  };
+
+  const handleConnectSession = () => {
+    const key = sessionKeyInput.trim();
+    if (!key) return;
+    sessionKeyInputRef.current = key;
+    onUpdateTab(tab.id, (t) => ({
+      ...t,
+      sessionKey: key,
+      label: key.split(':').slice(1, 3).join(' / ') || key,
+      messages: [],
+    }));
+    void loadSessionHistory(tab.id, key);
+  };
 
   const px = compact ? 'px-2' : 'px-3 md:px-6';
 
@@ -344,7 +590,6 @@ function SinglePanel({
         input: '',
       }));
     } else if (cmdName === '/agent') {
-      // Fill input with /agent so user can type the ID
       onUpdateTab(tab.id, (t) => ({ ...t, input: '/agent ' }));
     } else {
       onUpdateTab(tab.id, (t) => ({ ...t, input: cmdName + ' ' }));
@@ -376,7 +621,6 @@ function SinglePanel({
       }
     }
 
-    // Handle /agent command execution via Enter
     if (e.key === 'Enter' && !e.shiftKey && tab.input.startsWith('/agent ')) {
       e.preventDefault();
       const newAgentId = tab.input.slice('/agent '.length).trim();
@@ -405,7 +649,6 @@ function SinglePanel({
     const el = messageRefs.current.get(messageId);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      // Briefly highlight
       el.classList.add('ring-2', 'ring-amber-400', 'ring-offset-2', 'rounded-lg');
       setTimeout(() => {
         el.classList.remove('ring-2', 'ring-amber-400', 'ring-offset-2', 'rounded-lg');
@@ -415,21 +658,107 @@ function SinglePanel({
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Agent header */}
+      {/* Agent / Channel header */}
       <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground whitespace-nowrap">Agent:</span>
-          <Input
-            className="h-6 text-xs flex-1 min-w-0"
-            placeholder="Agent ID (leave empty for default)"
-            value={tab.agentId}
-            onChange={(e) =>
-              onUpdateTab(tab.id, (t) => ({
-                ...t,
-                agentId: e.target.value,
-              }))
-            }
-          />
+          {/* Mode toggle */}
+          <div className="flex items-center rounded-md border overflow-hidden flex-shrink-0">
+            <button
+              className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+                !isChannelMode
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'agent' }))}
+            >
+              Agent
+            </button>
+            <button
+              className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+                isChannelMode
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+              onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'channel' }))}
+            >
+              Channel
+            </button>
+          </div>
+
+          {!isChannelMode ? (
+            /* Agent mode: agent ID input */
+            <>
+              <span className="text-xs text-muted-foreground whitespace-nowrap">ID:</span>
+              <Input
+                className="h-6 text-xs flex-1 min-w-0"
+                placeholder="Agent ID (leave empty for default)"
+                value={tab.agentId}
+                onChange={(e) =>
+                  onUpdateTab(tab.id, (t) => ({
+                    ...t,
+                    agentId: e.target.value,
+                  }))
+                }
+              />
+            </>
+          ) : (
+            /* Channel mode: session key input + Load Sessions */
+            <div className="flex items-center gap-1 flex-1 min-w-0 relative">
+              <span className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">Session:</span>
+              <Input
+                className="h-6 text-xs flex-1 min-w-0"
+                placeholder="agent:main:telegram:..."
+                value={sessionKeyInput}
+                onChange={(e) => {
+                  setSessionKeyInput(e.target.value);
+                  sessionKeyInputRef.current = e.target.value;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleConnectSession();
+                }}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[10px] px-2 flex-shrink-0"
+                onClick={handleConnectSession}
+                disabled={!sessionKeyInput.trim()}
+              >
+                Connect
+              </Button>
+              <div className="relative flex-shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-[10px] px-2"
+                  onClick={handleLoadSessions}
+                  disabled={loadingSessions}
+                >
+                  {loadingSessions ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <>
+                      Load <ChevronDownIcon className="h-2.5 w-2.5 ml-0.5" />
+                    </>
+                  )}
+                </Button>
+                {showSessions && (
+                  <SessionsDropdown
+                    sessions={sessions}
+                    onSelect={handleSelectSession}
+                    onClose={() => setShowSessions(false)}
+                  />
+                )}
+              </div>
+              {tab.sessionKey && (
+                <span className="flex items-center gap-1 text-[10px] text-green-500 flex-shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  Live
+                </span>
+              )}
+            </div>
+          )}
+
           <Button
             variant="ghost"
             size="icon"
@@ -455,10 +784,24 @@ function SinglePanel({
         <div className={`${px} py-4`}>
           {tab.messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-              <Bot className="h-8 w-8 mb-2 opacity-40" />
-              <p className="text-sm">Start a conversation</p>
-              <p className="text-xs mt-1 opacity-60">Attach images or files with 📎</p>
-              <p className="text-xs mt-1 opacity-60">Type <kbd className="px-1 py-0.5 rounded bg-muted border text-[10px]">/</kbd> for commands</p>
+              {isChannelMode ? (
+                <>
+                  <Radio className="h-8 w-8 mb-2 opacity-40" />
+                  <p className="text-sm">Channel mode</p>
+                  <p className="text-xs mt-1 opacity-60">
+                    {tab.sessionKey
+                      ? 'Loading history...'
+                      : 'Enter a session key or click "Load" to browse sessions'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Bot className="h-8 w-8 mb-2 opacity-40" />
+                  <p className="text-sm">Start a conversation</p>
+                  <p className="text-xs mt-1 opacity-60">Attach images or files with 📎</p>
+                  <p className="text-xs mt-1 opacity-60">Type <kbd className="px-1 py-0.5 rounded bg-muted border text-[10px]">/</kbd> for commands</p>
+                </>
+              )}
             </div>
           ) : (
             <div className={`space-y-3 ${compact ? '' : 'max-w-3xl mx-auto'}`}>
@@ -471,6 +814,13 @@ function SinglePanel({
                   }}
                   className="transition-all duration-300"
                 >
+                  {/* Channel source badge */}
+                  {msg.source && (
+                    <div className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9px] font-medium mb-0.5 ${channelBadgeColor(msg.source)}`}>
+                      <Radio className="h-2 w-2" />
+                      {msg.source}
+                    </div>
+                  )}
                   {msg.role === 'user' && msg.attachment && (
                     <div className="flex justify-end mb-1">
                       {msg.attachment.type === 'image' && msg.attachment.preview ? (
@@ -503,8 +853,8 @@ function SinglePanel({
         </div>
       </div>
 
-      {/* Pending file preview */}
-      {tab.pendingFile && (
+      {/* Pending file preview (agent mode only) */}
+      {!isChannelMode && tab.pendingFile && (
         <div className="border-t px-3 py-1.5 bg-muted/30 flex-shrink-0">
           <div className="flex items-center gap-2">
             {tab.pendingFilePreview ? (
@@ -536,8 +886,8 @@ function SinglePanel({
       {/* Input */}
       <div className="border-t p-2 bg-card flex-shrink-0">
         <div className="relative">
-          {/* Quick commands dropdown */}
-          {showCommands && (
+          {/* Quick commands dropdown (agent mode only) */}
+          {!isChannelMode && showCommands && (
             <QuickCommandsDropdown
               inputValue={tab.input}
               onSelect={executeCommand}
@@ -552,34 +902,40 @@ function SinglePanel({
               if (!showCommands) onSend(tab.id);
             }}
           >
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 flex-shrink-0"
-              disabled={tab.streaming}
-              onClick={() => onAttachClick(tab.id)}
-              title="Attach image or file"
-            >
-              {tab.pendingFile ? (
-                isImageFile(tab.pendingFile) ? (
-                  <ImageIcon className="h-4 w-4 text-primary" />
+            {/* Attach button (agent mode only) */}
+            {!isChannelMode && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 flex-shrink-0"
+                disabled={tab.streaming}
+                onClick={() => onAttachClick(tab.id)}
+                title="Attach image or file"
+              >
+                {tab.pendingFile ? (
+                  isImageFile(tab.pendingFile) ? (
+                    <ImageIcon className="h-4 w-4 text-primary" />
+                  ) : (
+                    <FileText className="h-4 w-4 text-primary" />
+                  )
                 ) : (
-                  <FileText className="h-4 w-4 text-primary" />
-                )
-              ) : (
-                <Paperclip className="h-4 w-4" />
-              )}
-            </Button>
+                  <Paperclip className="h-4 w-4" />
+                )}
+              </Button>
+            )}
             <Input
               className="flex-1 h-8 text-sm"
-              placeholder={tab.pendingFile ? 'Add a message (optional)...' : 'Type a message or / for commands...'}
+              placeholder={
+                isChannelMode
+                  ? (tab.sessionKey ? 'Send message to channel...' : 'Connect to a session first')
+                  : (tab.pendingFile ? 'Add a message (optional)...' : 'Type a message or / for commands...')
+              }
               value={tab.input}
               onChange={(e) => handleInputChange(e.target.value)}
-              disabled={tab.streaming}
+              disabled={tab.streaming || (isChannelMode && !tab.sessionKey)}
               onKeyDown={handleInputKeyDown}
               onBlur={() => {
-                // Delay close to allow click on dropdown
                 setTimeout(() => setShowCommands(false), 150);
               }}
             />
@@ -587,7 +943,7 @@ function SinglePanel({
               type="submit"
               size="icon"
               className="h-8 w-8 flex-shrink-0"
-              disabled={tab.streaming || (!tab.input.trim() && !tab.pendingFile)}
+              disabled={tab.streaming || (!tab.input.trim() && !tab.pendingFile) || (isChannelMode && !tab.sessionKey)}
             >
               {tab.streaming ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -783,6 +1139,60 @@ export default function ChatPage() {
     const tab = tabs.find((t) => t.id === tabId);
     if (!tab || (!tab.input.trim() && !tab.pendingFile) || tab.streaming) return;
 
+    // Channel mode: send via sessions API
+    if (tab.mode === 'channel') {
+      if (!tab.sessionKey || !tab.input.trim()) return;
+      const userContent = tab.input.trim();
+
+      const userMsg: Message = {
+        id: `msg-${Date.now()}-user`,
+        role: 'user',
+        content: userContent,
+        timestamp: new Date(),
+      };
+
+      updateTab(tabId, (t) => ({
+        ...t,
+        messages: [...t.messages, userMsg],
+        input: '',
+        streaming: true,
+      }));
+
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(tab.sessionKey)}/send`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ message: userContent }),
+          }
+        );
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Send failed' }));
+          updateTab(tabId, (t) => ({
+            ...t,
+            streaming: false,
+            messages: [
+              ...t.messages,
+              {
+                id: `msg-${Date.now()}-err`,
+                role: 'assistant' as const,
+                content: `Error: ${(err as { error?: string }).error || 'Unknown error'}`,
+                timestamp: new Date(),
+              },
+            ],
+          }));
+        } else {
+          updateTab(tabId, (t) => ({ ...t, streaming: false }));
+        }
+      } catch {
+        updateTab(tabId, (t) => ({ ...t, streaming: false }));
+      }
+      return;
+    }
+
+    // Agent mode: existing logic
     const userContent = tab.input.trim();
     const pendingFile = tab.pendingFile;
     const pendingFilePreview = tab.pendingFilePreview;
@@ -926,6 +1336,7 @@ export default function ChatPage() {
 
   const canAddTab = tabs.length < (splitView ? MAX_SPLIT_PANELS : MAX_TABS);
   const activeTabData = tabs.find((t) => t.id === activeTab);
+  void activeTabData; // used implicitly via tabs array
 
   return (
     <div className="h-full flex flex-col">
@@ -949,13 +1360,20 @@ export default function ChatPage() {
                     value={tab.id}
                     className="relative h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 text-xs max-w-[160px]"
                   >
-                    <Bot className="h-3 w-3 mr-1.5 flex-shrink-0" />
+                    {tab.mode === 'channel' ? (
+                      <Radio className="h-3 w-3 mr-1.5 flex-shrink-0 text-blue-500" />
+                    ) : (
+                      <Bot className="h-3 w-3 mr-1.5 flex-shrink-0" />
+                    )}
                     <InlineTabLabel
                       label={tab.label}
                       onRename={(newLabel) => renameTab(tab.id, newLabel)}
                     />
                     {tab.streaming && (
                       <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                    )}
+                    {tab.mode === 'channel' && tab.sessionKey && (
+                      <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
                     )}
                     <button
                       className="ml-2 rounded-full hover:bg-accent p-0.5 flex-shrink-0"
@@ -980,13 +1398,20 @@ export default function ChatPage() {
                 key={tab.id}
                 className="flex items-center gap-1 px-2 py-1 rounded bg-muted/60 text-xs flex-shrink-0"
               >
-                <Bot className="h-3 w-3" />
+                {tab.mode === 'channel' ? (
+                  <Radio className="h-3 w-3 text-blue-500" />
+                ) : (
+                  <Bot className="h-3 w-3" />
+                )}
                 <InlineTabLabel
                   label={tab.label}
                   onRename={(newLabel) => renameTab(tab.id, newLabel)}
                 />
                 {tab.streaming && (
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                )}
+                {tab.mode === 'channel' && tab.sessionKey && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
                 )}
                 <button
                   className="rounded-full hover:bg-accent p-0.5"
@@ -1030,11 +1455,21 @@ export default function ChatPage() {
           {tabs.map((tab) => (
             <div key={tab.id} className="bg-background overflow-hidden flex flex-col min-h-0">
               <div className="px-2 py-1 border-b bg-card/80 flex items-center gap-1.5 flex-shrink-0">
-                <Bot className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                {tab.mode === 'channel' ? (
+                  <Radio className="h-3 w-3 text-blue-500 flex-shrink-0" />
+                ) : (
+                  <Bot className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                )}
                 <span className="text-xs font-medium truncate flex-1">{tab.label}</span>
-                {tab.agentId && (
+                {tab.mode === 'agent' && tab.agentId && (
                   <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[60px]">
                     {tab.agentId}
+                  </span>
+                )}
+                {tab.mode === 'channel' && tab.sessionKey && (
+                  <span className="flex items-center gap-0.5 text-[9px] text-blue-500">
+                    <span className="w-1 h-1 rounded-full bg-blue-500 animate-pulse" />
+                    Live
                   </span>
                 )}
               </div>
@@ -1060,12 +1495,21 @@ export default function ChatPage() {
             >
               {/* Chat header */}
               <div className="px-4 py-2 border-b bg-card/50 flex items-center gap-2 flex-shrink-0">
-                <Bot className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                {tab.mode === 'channel' ? (
+                  <Radio className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                ) : (
+                  <Bot className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                )}
                 <div className="flex flex-col min-w-0 flex-1">
                   <span className="text-sm font-semibold leading-tight truncate">{tab.label}</span>
-                  {tab.agentId && (
+                  {tab.mode === 'agent' && tab.agentId && (
                     <span className="text-[10px] text-muted-foreground font-mono leading-tight">
                       Agent: {tab.agentId}
+                    </span>
+                  )}
+                  {tab.mode === 'channel' && tab.sessionKey && (
+                    <span className="text-[10px] text-blue-500 font-mono leading-tight truncate">
+                      {tab.sessionKey}
                     </span>
                   )}
                 </div>
@@ -1073,6 +1517,12 @@ export default function ChatPage() {
                   <span className="flex items-center gap-1 text-[10px] text-green-500">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                     Streaming
+                  </span>
+                )}
+                {tab.mode === 'channel' && tab.sessionKey && (
+                  <span className="flex items-center gap-1 text-[10px] text-blue-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                    Live
                   </span>
                 )}
               </div>
