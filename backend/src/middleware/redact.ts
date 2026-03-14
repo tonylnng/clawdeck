@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 
-const SENSITIVE_KEYS = /\b(key|token|secret|password|api_key|auth|apikey|passwd|pwd|botToken|apiKey)\b/i;
+const SENSITIVE_KEYS = /\b(token|secret|password|api_key|apikey|passwd|pwd|botToken|apiKey|gatewayToken|authToken|accessToken|refreshToken|privateKey)\b/i;
 
 export function redactString(input: string): string {
   // sk- keys (OpenAI style)
