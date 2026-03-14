@@ -7,7 +7,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import { oneLight } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import { useTheme } from 'next-themes';
-import { Bot, User, Copy, Check } from 'lucide-react';
+import { Bot, User, Copy, Check, Volume2, VolumeX, Pin, PinOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Message {
@@ -15,11 +15,13 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  pinned?: boolean;
 }
 
 interface ChatMessageProps {
   message: Message;
   isStreaming?: boolean;
+  onPin?: (messageId: string) => void;
 }
 
 // Animated typing indicator (three bouncing dots)
@@ -42,10 +44,11 @@ function TypingIndicator() {
   );
 }
 
-export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) {
+export function ChatMessage({ message, isStreaming = false, onPin }: ChatMessageProps) {
   const { resolvedTheme } = useTheme();
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
   const handleCopy = async () => {
     try {
@@ -55,6 +58,23 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
     } catch {
       // fallback
     }
+  };
+
+  const handleTTS = () => {
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    } else {
+      const utterance = new SpeechSynthesisUtterance(message.content);
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
+      window.speechSynthesis.speak(utterance);
+      setIsSpeaking(true);
+    }
+  };
+
+  const handlePin = () => {
+    onPin?.(message.id);
   };
 
   // Show typing indicator when streaming and no content yet
@@ -74,7 +94,7 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
 
-      {/* Bubble + copy */}
+      {/* Bubble + action buttons */}
       <div className={cn('flex flex-col gap-1 max-w-[85%]', isUser ? 'items-end' : 'items-start')}>
         <div
           className={cn(
@@ -144,19 +164,57 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
           )}
         </div>
 
-        {/* Copy button — shown on hover */}
-        {message.content && !isUser && (
-          <button
-            onClick={handleCopy}
-            className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-1"
-            title="Copy message"
-          >
-            {copied ? (
-              <><Check className="h-3 w-3 text-green-500" /><span className="text-green-500">Copied</span></>
-            ) : (
-              <><Copy className="h-3 w-3" /><span>Copy</span></>
+        {/* Action buttons — shown on hover */}
+        {message.content && (
+          <div className={cn(
+            'opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 px-1',
+            isUser ? 'flex-row-reverse' : 'flex-row'
+          )}>
+            {/* Copy button (assistant only) */}
+            {!isUser && (
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                title="Copy message"
+              >
+                {copied ? (
+                  <><Check className="h-3 w-3 text-green-500" /><span className="text-green-500">Copied</span></>
+                ) : (
+                  <><Copy className="h-3 w-3" /><span>Copy</span></>
+                )}
+              </button>
             )}
-          </button>
+
+            {/* TTS button (assistant only) */}
+            {!isUser && !showTypingIndicator && (
+              <button
+                onClick={handleTTS}
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                title={isSpeaking ? 'Stop speaking' : 'Read aloud'}
+              >
+                {isSpeaking ? (
+                  <><VolumeX className="h-3 w-3 text-orange-500" /><span className="text-orange-500">Stop</span></>
+                ) : (
+                  <><Volume2 className="h-3 w-3" /><span>Read</span></>
+                )}
+              </button>
+            )}
+
+            {/* Pin button (all messages) */}
+            {onPin && (
+              <button
+                onClick={handlePin}
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+                title={message.pinned ? 'Unpin message' : 'Pin message'}
+              >
+                {message.pinned ? (
+                  <><PinOff className="h-3 w-3 text-amber-500" /><span className="text-amber-500">Unpin</span></>
+                ) : (
+                  <><Pin className="h-3 w-3" /><span>Pin</span></>
+                )}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

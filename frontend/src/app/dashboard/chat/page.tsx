@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { ChatMessage } from '@/components/chat/ChatMessage';
 import {
   Plus, X, Send, Loader2, Bot, Paperclip, FileText,
   Image as ImageIcon, Trash2, LayoutTemplate, Rows3,
+  Pin, ChevronDown, ChevronUp,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  pinned?: boolean;
   attachment?: {
     type: 'image' | 'file';
     name: string;
@@ -38,13 +40,12 @@ interface ChatTab {
 }
 
 // ─── LocalStorage Schema ───────────────────────────────────────────────────────
-// Key: 'clawdeck-chat-tabs'
-// Value: JSON array of PersistedTab[]
 interface PersistedMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  timestamp: string; // ISO string
+  timestamp: string;
+  pinned?: boolean;
   attachment?: { type: 'image' | 'file'; name: string; preview?: string };
 }
 
@@ -60,6 +61,21 @@ const LS_ACTIVE_KEY = 'clawdeck-chat-active';
 const MAX_TABS = 20;
 const MAX_MESSAGES_PER_TAB = 100;
 const MAX_SPLIT_PANELS = 8;
+
+// ─── Quick Commands ───────────────────────────────────────────────────────────
+
+interface QuickCommand {
+  name: string;
+  description: string;
+  args?: string;
+}
+
+const QUICK_COMMANDS: QuickCommand[] = [
+  { name: '/clear', description: 'Clear conversation' },
+  { name: '/agent', description: 'Switch agent ID', args: '<id>' },
+  { name: '/new', description: 'Open new chat tab' },
+  { name: '/help', description: 'Show all commands' },
+];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,13 +103,11 @@ function isImageFile(file: File): boolean {
   );
 }
 
-/** Generate auto-label from first user message (max 20 chars) */
 function autoLabel(text: string): string {
   const trimmed = text.trim().slice(0, 20);
   return trimmed.length < text.trim().length ? trimmed + '…' : trimmed;
 }
 
-/** Determine grid cols class based on panel count */
 function splitGridClass(count: number): string {
   if (count === 1) return 'grid-cols-1';
   if (count === 2) return 'grid-cols-2';
@@ -115,6 +129,7 @@ function saveTabs(tabs: ChatTab[], activeTabId: string) {
         role: m.role,
         content: m.content,
         timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp),
+        pinned: m.pinned,
         attachment: m.attachment,
       })),
     }));
@@ -146,7 +161,8 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
         id: m.id,
         role: m.role,
         content: m.content,
-        timestamp: new Date(m.timestamp), // restore Date object
+        timestamp: new Date(m.timestamp),
+        pinned: m.pinned ?? false,
         attachment: m.attachment,
       })),
     }));
@@ -157,8 +173,106 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
   }
 }
 
+// ─── Pinned Messages Section ──────────────────────────────────────────────────
+
+interface PinnedSectionProps {
+  messages: Message[];
+  onScrollTo: (messageId: string) => void;
+  onUnpin: (messageId: string) => void;
+}
+
+function PinnedSection({ messages, onScrollTo, onUnpin }: PinnedSectionProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const pinned = messages.filter((m) => m.pinned);
+  if (pinned.length === 0) return null;
+
+  return (
+    <div className="border-b bg-amber-50/50 dark:bg-amber-950/20 flex-shrink-0">
+      <button
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-100/50 dark:hover:bg-amber-900/20 transition-colors"
+        onClick={() => setCollapsed((v) => !v)}
+      >
+        <Pin className="h-3 w-3" />
+        <span>Pinned ({pinned.length})</span>
+        <span className="ml-auto">
+          {collapsed ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+        </span>
+      </button>
+      {!collapsed && (
+        <div className="px-3 pb-2 space-y-1">
+          {pinned.map((msg) => (
+            <div
+              key={msg.id}
+              className="flex items-center gap-2 group/pin"
+            >
+              <button
+                className="flex-1 text-left text-xs text-muted-foreground hover:text-foreground truncate py-0.5"
+                onClick={() => onScrollTo(msg.id)}
+                title="Jump to message"
+              >
+                <span className="font-medium text-amber-600 dark:text-amber-400 mr-1">
+                  {msg.role === 'user' ? '👤' : '🤖'}
+                </span>
+                {msg.content.trim().slice(0, 50)}{msg.content.trim().length > 50 ? '…' : ''}
+              </button>
+              <button
+                className="opacity-0 group-hover/pin:opacity-100 transition-opacity text-muted-foreground hover:text-destructive flex-shrink-0"
+                onClick={() => onUnpin(msg.id)}
+                title="Unpin"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Quick Commands Dropdown ──────────────────────────────────────────────────
+
+interface QuickCommandsDropdownProps {
+  inputValue: string;
+  onSelect: (command: string) => void;
+  onClose: () => void;
+  selectedIndex: number;
+}
+
+function QuickCommandsDropdown({ inputValue, onSelect, onClose, selectedIndex }: QuickCommandsDropdownProps) {
+  const filtered = QUICK_COMMANDS.filter((cmd) =>
+    cmd.name.startsWith(inputValue.split(' ')[0])
+  );
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div className="absolute bottom-full left-0 right-0 mb-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50">
+      <div className="p-1">
+        {filtered.map((cmd, idx) => (
+          <button
+            key={cmd.name}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-left text-sm transition-colors ${
+              idx === selectedIndex
+                ? 'bg-accent text-accent-foreground'
+                : 'hover:bg-accent/50'
+            }`}
+            onClick={() => onSelect(cmd.name)}
+            onMouseDown={(e) => e.preventDefault()} // prevent input blur
+          >
+            <span className="font-mono font-medium text-primary">{cmd.name}</span>
+            {cmd.args && (
+              <span className="text-muted-foreground text-xs">{cmd.args}</span>
+            )}
+            <span className="text-muted-foreground text-xs ml-auto">{cmd.description}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── SinglePanel ──────────────────────────────────────────────────────────────
-// Renders one chat panel (used in both tab mode and split view)
 
 interface SinglePanelProps {
   tab: ChatTab;
@@ -166,7 +280,8 @@ interface SinglePanelProps {
   onSend: (tabId: string) => void;
   onClear: (tabId: string) => void;
   onAttachClick: (tabId: string) => void;
-  compact?: boolean; // smaller padding in split view
+  onAddTab: () => void;
+  compact?: boolean;
 }
 
 function SinglePanel({
@@ -175,16 +290,128 @@ function SinglePanel({
   onSend,
   onClear,
   onAttachClick,
+  onAddTab,
   compact = false,
 }: SinglePanelProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [showCommands, setShowCommands] = useState(false);
+  const [commandSelectedIdx, setCommandSelectedIdx] = useState(0);
 
-  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [tab.messages]);
 
   const px = compact ? 'px-2' : 'px-3 md:px-6';
+
+  const handleInputChange = (value: string) => {
+    onUpdateTab(tab.id, (t) => ({ ...t, input: value }));
+    if (value.startsWith('/')) {
+      setShowCommands(true);
+      setCommandSelectedIdx(0);
+    } else {
+      setShowCommands(false);
+    }
+  };
+
+  const getFilteredCommands = () =>
+    QUICK_COMMANDS.filter((cmd) =>
+      cmd.name.startsWith(tab.input.split(' ')[0])
+    );
+
+  const executeCommand = useCallback((cmdName: string) => {
+    setShowCommands(false);
+
+    if (cmdName === '/clear') {
+      onClear(tab.id);
+      onUpdateTab(tab.id, (t) => ({ ...t, input: '' }));
+    } else if (cmdName === '/new') {
+      onAddTab();
+      onUpdateTab(tab.id, (t) => ({ ...t, input: '' }));
+    } else if (cmdName === '/help') {
+      const helpText = QUICK_COMMANDS.map(
+        (c) => `${c.name}${c.args ? ' ' + c.args : ''} — ${c.description}`
+      ).join('\n');
+      const helpMsg: Message = {
+        id: `msg-${Date.now()}-system`,
+        role: 'assistant',
+        content: `**Available Commands:**\n\n${helpText}`,
+        timestamp: new Date(),
+      };
+      onUpdateTab(tab.id, (t) => ({
+        ...t,
+        messages: [...t.messages, helpMsg],
+        input: '',
+      }));
+    } else if (cmdName === '/agent') {
+      // Fill input with /agent so user can type the ID
+      onUpdateTab(tab.id, (t) => ({ ...t, input: '/agent ' }));
+    } else {
+      onUpdateTab(tab.id, (t) => ({ ...t, input: cmdName + ' ' }));
+    }
+  }, [tab.id, onClear, onAddTab, onUpdateTab]);
+
+  const handleInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (showCommands) {
+      const filtered = getFilteredCommands();
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCommandSelectedIdx((i) => Math.min(i + 1, filtered.length - 1));
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCommandSelectedIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === 'Enter' && filtered.length > 0) {
+        e.preventDefault();
+        executeCommand(filtered[commandSelectedIdx]?.name || filtered[0].name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowCommands(false);
+        return;
+      }
+    }
+
+    // Handle /agent command execution via Enter
+    if (e.key === 'Enter' && !e.shiftKey && tab.input.startsWith('/agent ')) {
+      e.preventDefault();
+      const newAgentId = tab.input.slice('/agent '.length).trim();
+      if (newAgentId) {
+        onUpdateTab(tab.id, (t) => ({ ...t, agentId: newAgentId, input: '' }));
+      }
+      return;
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey && !showCommands) {
+      e.preventDefault();
+      onSend(tab.id);
+    }
+  };
+
+  const handlePinMessage = useCallback((messageId: string) => {
+    onUpdateTab(tab.id, (t) => ({
+      ...t,
+      messages: t.messages.map((m) =>
+        m.id === messageId ? { ...m, pinned: !m.pinned } : m
+      ),
+    }));
+  }, [tab.id, onUpdateTab]);
+
+  const handleScrollToMessage = useCallback((messageId: string) => {
+    const el = messageRefs.current.get(messageId);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Briefly highlight
+      el.classList.add('ring-2', 'ring-amber-400', 'ring-offset-2', 'rounded-lg');
+      setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-amber-400', 'ring-offset-2', 'rounded-lg');
+      }, 2000);
+    }
+  }, []);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -216,6 +443,13 @@ function SinglePanel({
         </div>
       </div>
 
+      {/* Pinned messages section */}
+      <PinnedSection
+        messages={tab.messages}
+        onScrollTo={handleScrollToMessage}
+        onUnpin={handlePinMessage}
+      />
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className={`${px} py-4`}>
@@ -224,11 +458,19 @@ function SinglePanel({
               <Bot className="h-8 w-8 mb-2 opacity-40" />
               <p className="text-sm">Start a conversation</p>
               <p className="text-xs mt-1 opacity-60">Attach images or files with 📎</p>
+              <p className="text-xs mt-1 opacity-60">Type <kbd className="px-1 py-0.5 rounded bg-muted border text-[10px]">/</kbd> for commands</p>
             </div>
           ) : (
             <div className={`space-y-3 ${compact ? '' : 'max-w-3xl mx-auto'}`}>
               {tab.messages.map((msg) => (
-                <div key={msg.id}>
+                <div
+                  key={msg.id}
+                  ref={(el) => {
+                    if (el) messageRefs.current.set(msg.id, el);
+                    else messageRefs.current.delete(msg.id);
+                  }}
+                  className="transition-all duration-300"
+                >
                   {msg.role === 'user' && msg.attachment && (
                     <div className="flex justify-end mb-1">
                       {msg.attachment.type === 'image' && msg.attachment.preview ? (
@@ -251,6 +493,7 @@ function SinglePanel({
                   <ChatMessage
                     message={msg}
                     isStreaming={tab.streaming && msg.id === tab.messages[tab.messages.length - 1]?.id}
+                    onPin={handlePinMessage}
                   />
                 </div>
               ))}
@@ -292,60 +535,133 @@ function SinglePanel({
 
       {/* Input */}
       <div className="border-t p-2 bg-card flex-shrink-0">
-        <form
-          className="flex gap-1.5 items-center"
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSend(tab.id);
-          }}
-        >
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 flex-shrink-0"
-            disabled={tab.streaming}
-            onClick={() => onAttachClick(tab.id)}
-            title="Attach image or file"
-          >
-            {tab.pendingFile ? (
-              isImageFile(tab.pendingFile) ? (
-                <ImageIcon className="h-4 w-4 text-primary" />
-              ) : (
-                <FileText className="h-4 w-4 text-primary" />
-              )
-            ) : (
-              <Paperclip className="h-4 w-4" />
-            )}
-          </Button>
-          <Input
-            className="flex-1 h-8 text-sm"
-            placeholder={tab.pendingFile ? 'Add a message (optional)...' : 'Type a message...'}
-            value={tab.input}
-            onChange={(e) => onUpdateTab(tab.id, (t) => ({ ...t, input: e.target.value }))}
-            disabled={tab.streaming}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                onSend(tab.id);
-              }
+        <div className="relative">
+          {/* Quick commands dropdown */}
+          {showCommands && (
+            <QuickCommandsDropdown
+              inputValue={tab.input}
+              onSelect={executeCommand}
+              onClose={() => setShowCommands(false)}
+              selectedIndex={commandSelectedIdx}
+            />
+          )}
+          <form
+            className="flex gap-1.5 items-center"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!showCommands) onSend(tab.id);
             }}
-          />
-          <Button
-            type="submit"
-            size="icon"
-            className="h-8 w-8 flex-shrink-0"
-            disabled={tab.streaming || (!tab.input.trim() && !tab.pendingFile)}
           >
-            {tab.streaming ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
-          </Button>
-        </form>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 flex-shrink-0"
+              disabled={tab.streaming}
+              onClick={() => onAttachClick(tab.id)}
+              title="Attach image or file"
+            >
+              {tab.pendingFile ? (
+                isImageFile(tab.pendingFile) ? (
+                  <ImageIcon className="h-4 w-4 text-primary" />
+                ) : (
+                  <FileText className="h-4 w-4 text-primary" />
+                )
+              ) : (
+                <Paperclip className="h-4 w-4" />
+              )}
+            </Button>
+            <Input
+              className="flex-1 h-8 text-sm"
+              placeholder={tab.pendingFile ? 'Add a message (optional)...' : 'Type a message or / for commands...'}
+              value={tab.input}
+              onChange={(e) => handleInputChange(e.target.value)}
+              disabled={tab.streaming}
+              onKeyDown={handleInputKeyDown}
+              onBlur={() => {
+                // Delay close to allow click on dropdown
+                setTimeout(() => setShowCommands(false), 150);
+              }}
+            />
+            <Button
+              type="submit"
+              size="icon"
+              className="h-8 w-8 flex-shrink-0"
+              disabled={tab.streaming || (!tab.input.trim() && !tab.pendingFile)}
+            >
+              {tab.streaming ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4" />
+              )}
+            </Button>
+          </form>
+        </div>
       </div>
     </div>
+  );
+}
+
+// ─── Inline Tab Label Edit ────────────────────────────────────────────────────
+
+interface InlineTabLabelProps {
+  label: string;
+  onRename: (newLabel: string) => void;
+}
+
+function InlineTabLabel({ label, onRename }: InlineTabLabelProps) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(label);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setValue(label);
+    setEditing(true);
+    setTimeout(() => inputRef.current?.select(), 0);
+  };
+
+  const confirm = () => {
+    setEditing(false);
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== label) {
+      onRename(trimmed);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      confirm();
+    } else if (e.key === 'Escape') {
+      setEditing(false);
+      setValue(label);
+    }
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        className="bg-transparent border-b border-primary outline-none text-xs w-[80px] max-w-[100px]"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={confirm}
+        onKeyDown={handleKeyDown}
+        onClick={(e) => e.stopPropagation()}
+      />
+    );
+  }
+
+  return (
+    <span
+      className="truncate max-w-[100px] cursor-text"
+      onDoubleClick={startEdit}
+      title="Double-click to rename"
+    >
+      {label}
+    </span>
   );
 }
 
@@ -358,10 +674,10 @@ export default function ChatPage() {
   const [splitView, setSplitView] = useState(false);
   const abortRefs = useRef<Map<string, AbortController>>(new Map());
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const activeFileTabRef = useRef<string>(''); // which tab triggered file picker
+  const activeFileTabRef = useRef<string>('');
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Init: load from localStorage or create default tab ─────────────────────
+  // ── Init ────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const agentId = searchParams.get('agent') || '';
     const saved = loadTabs();
@@ -375,7 +691,7 @@ export default function ChatPage() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Debounced save to localStorage ─────────────────────────────────────────
+  // ── Debounced save ──────────────────────────────────────────────────────────
   const scheduleSave = useCallback((tabs: ChatTab[], activeTabId: string) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
@@ -383,7 +699,6 @@ export default function ChatPage() {
     }, 500);
   }, []);
 
-  // Save whenever tabs or activeTab changes
   useEffect(() => {
     if (tabs.length === 0) return;
     scheduleSave(tabs, activeTab);
@@ -404,7 +719,6 @@ export default function ChatPage() {
 
   const clearMessages = useCallback((tabId: string) => {
     updateTab(tabId, (t) => ({ ...t, messages: [] }));
-    // Immediately clear localStorage for this tab
     setTimeout(() => {
       setTabs((prev) => {
         saveTabs(prev, activeTab);
@@ -430,6 +744,10 @@ export default function ChatPage() {
       return remaining;
     });
   }, []);
+
+  const renameTab = useCallback((tabId: string, newLabel: string) => {
+    updateTab(tabId, (t) => ({ ...t, label: newLabel }));
+  }, [updateTab]);
 
   // ── File attach ─────────────────────────────────────────────────────────────
 
@@ -485,7 +803,6 @@ export default function ChatPage() {
         : undefined,
     };
 
-    // Auto-name tab on first user message
     const newLabel = isFirstMessage && userContent ? autoLabel(userContent) : undefined;
 
     updateTab(tabId, (t) => ({
@@ -633,7 +950,10 @@ export default function ChatPage() {
                     className="relative h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 text-xs max-w-[160px]"
                   >
                     <Bot className="h-3 w-3 mr-1.5 flex-shrink-0" />
-                    <span className="truncate max-w-[100px]">{tab.label}</span>
+                    <InlineTabLabel
+                      label={tab.label}
+                      onRename={(newLabel) => renameTab(tab.id, newLabel)}
+                    />
                     {tab.streaming && (
                       <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                     )}
@@ -661,7 +981,10 @@ export default function ChatPage() {
                 className="flex items-center gap-1 px-2 py-1 rounded bg-muted/60 text-xs flex-shrink-0"
               >
                 <Bot className="h-3 w-3" />
-                <span className="max-w-[80px] truncate">{tab.label}</span>
+                <InlineTabLabel
+                  label={tab.label}
+                  onRename={(newLabel) => renameTab(tab.id, newLabel)}
+                />
                 {tab.streaming && (
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                 )}
@@ -703,11 +1026,9 @@ export default function ChatPage() {
       {/* ── Content Area ──────────────────────────────────────────────────────── */}
 
       {splitView ? (
-        /* Split View: all panels in a grid */
         <div className={`flex-1 grid ${splitGridClass(tabs.length)} gap-px bg-border overflow-hidden`}>
           {tabs.map((tab) => (
             <div key={tab.id} className="bg-background overflow-hidden flex flex-col min-h-0">
-              {/* Panel header showing session name */}
               <div className="px-2 py-1 border-b bg-card/80 flex items-center gap-1.5 flex-shrink-0">
                 <Bot className="h-3 w-3 text-muted-foreground flex-shrink-0" />
                 <span className="text-xs font-medium truncate flex-1">{tab.label}</span>
@@ -723,13 +1044,13 @@ export default function ChatPage() {
                 onSend={sendMessage}
                 onClear={clearMessages}
                 onAttachClick={handleAttachClick}
+                onAddTab={addTab}
                 compact
               />
             </div>
           ))}
         </div>
       ) : (
-        /* Tab Mode */
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
           {tabs.map((tab) => (
             <TabsContent
@@ -737,7 +1058,7 @@ export default function ChatPage() {
               value={tab.id}
               className="flex-1 flex flex-col overflow-hidden mt-0 data-[state=inactive]:hidden"
             >
-              {/* Chat header: agent ID + session name */}
+              {/* Chat header */}
               <div className="px-4 py-2 border-b bg-card/50 flex items-center gap-2 flex-shrink-0">
                 <Bot className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 <div className="flex flex-col min-w-0 flex-1">
@@ -762,6 +1083,7 @@ export default function ChatPage() {
                 onSend={sendMessage}
                 onClear={clearMessages}
                 onAttachClick={handleAttachClick}
+                onAddTab={addTab}
               />
             </TabsContent>
           ))}
