@@ -340,7 +340,134 @@ function LogViewer({ fetchUrl, streamUrl }: LogViewerProps) {
 }
 
 // ─────────────────────────────────────────────
-// Agent Log tab: selector + viewer
+// Agent session log with infinite scroll
+// ─────────────────────────────────────────────
+function AgentSessionLog({ agentId }: { agentId: string }) {
+  const SESSIONS_PER_PAGE = 10;
+  const [lines, setLines] = useState<LogLine[]>([]);
+  const [sessionSkip, setSessionSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [filter, setFilter] = useState('all');
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const LEVEL_FILTERS = ['all', 'info', 'debug'];
+
+  const fetchPage = useCallback(async (skip: number, append: boolean) => {
+    if (append) setLoadingMore(true); else setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/logs/agents/${encodeURIComponent(agentId)}?sessionSkip=${skip}&sessionsPerPage=${SESSIONS_PER_PAGE}`,
+        { credentials: 'include' }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const parsed: LogLine[] = (data.lines || []).map((line: unknown) => {
+        if (typeof line === 'object' && line !== null) {
+          const obj = line as Record<string, unknown>;
+          return { id: nextLineId(), raw: String(obj.raw || ''), level: obj.level as string | undefined, message: obj.message as string | undefined, timestamp: obj.timestamp as string | undefined };
+        }
+        return parseLogLine(String(line));
+      });
+      setHasMore(data.hasMore ?? false);
+      setTotal(data.total ?? 0);
+      if (append) {
+        setLines(prev => [...prev, ...parsed]);
+      } else {
+        setLines(parsed);
+      }
+    } finally {
+      if (append) setLoadingMore(false); else setLoading(false);
+    }
+  }, [agentId]);
+
+  // Initial load
+  useEffect(() => {
+    setLines([]);
+    setSessionSkip(0);
+    setHasMore(true);
+    fetchPage(0, false);
+  }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Scroll to bottom detection → load more
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || loadingMore || !hasMore) return;
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+    if (nearBottom) {
+      const nextSkip = sessionSkip + SESSIONS_PER_PAGE;
+      setSessionSkip(nextSkip);
+      fetchPage(nextSkip, true);
+    }
+  }, [loadingMore, hasMore, sessionSkip, fetchPage]);
+
+  const filteredLines = filter === 'all' ? lines : lines.filter(l => {
+    const lv = (l.level || '').toLowerCase();
+    if (filter === 'info') return lv === 'info';
+    if (filter === 'debug') return lv === 'debug';
+    return true;
+  });
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b bg-card flex-shrink-0 flex-wrap">
+        <span className="text-xs text-muted-foreground">
+          {total > 0 ? `${total} sessions total` : 'Sessions'}
+        </span>
+        <div className="flex-1" />
+        {LEVEL_FILTERS.map(lvl => (
+          <Button key={lvl} variant={filter === lvl ? 'default' : 'ghost'} size="sm"
+            className="h-7 px-2 text-xs capitalize" onClick={() => setFilter(lvl)}>
+            {lvl === 'all' ? 'all' : lvl === 'info' ? '🤖 assistant' : '👤 user'}
+          </Button>
+        ))}
+        <Button variant="ghost" size="icon" className="h-7 w-7" title="Reload"
+          onClick={() => { setLines([]); setSessionSkip(0); setHasMore(true); fetchPage(0, false); }}
+          disabled={loading}>
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="flex items-center gap-2 px-3 py-1 border-b bg-muted/20 text-xs text-muted-foreground flex-shrink-0">
+        <span>{filteredLines.length} messages shown</span>
+        {hasMore && <span className="opacity-60">· scroll down to load more</span>}
+        {!hasMore && total > 0 && <span className="opacity-60">· all {total} sessions loaded</span>}
+      </div>
+
+      {/* Log output with scroll detection */}
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto font-mono text-xs p-3 bg-background"
+        onScroll={handleScroll}
+      >
+        {loading ? (
+          <p className="text-muted-foreground text-center py-8">Loading sessions...</p>
+        ) : filteredLines.length === 0 ? (
+          <p className="text-muted-foreground text-center py-8">No messages found</p>
+        ) : (
+          <>
+            {filteredLines.map(line => <LogLineRow key={line.id} line={line} />)}
+            {loadingMore && (
+              <div className="text-center py-3 text-muted-foreground text-xs">
+                <RefreshCw className="h-3 w-3 animate-spin inline mr-1" />
+                Loading more sessions...
+              </div>
+            )}
+            {!hasMore && !loadingMore && (
+              <p className="text-center py-3 text-muted-foreground text-xs opacity-50">— end of sessions —</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Agent Log tab: selector + session viewer
 // ─────────────────────────────────────────────
 function AgentLogTab() {
   const [selectedAgent, setSelectedAgent] = useState<string>(AGENT_IDS[0]);
@@ -353,26 +480,16 @@ function AgentLogTab() {
         <span className="text-xs text-muted-foreground whitespace-nowrap">Agent:</span>
         <div className="flex items-center gap-1 flex-wrap">
           {AGENT_IDS.map((id) => (
-            <Button
-              key={id}
-              variant={selectedAgent === id ? 'default' : 'outline'}
-              size="sm"
-              className="h-7 px-3 text-xs"
-              onClick={() => setSelectedAgent(id)}
-            >
+            <Button key={id} variant={selectedAgent === id ? 'default' : 'outline'}
+              size="sm" className="h-7 px-3 text-xs" onClick={() => setSelectedAgent(id)}>
               {id}
             </Button>
           ))}
         </div>
       </div>
 
-      {/* Log viewer — remounts with new URLs when agent changes */}
       <div className="flex-1 overflow-hidden">
-        <LogViewer
-          key={selectedAgent}
-          fetchUrl={`/api/logs/agents/${encodeURIComponent(selectedAgent)}`}
-          streamUrl={`/api/logs/stream?agentId=${encodeURIComponent(selectedAgent)}`}
-        />
+        <AgentSessionLog key={selectedAgent} agentId={selectedAgent} />
       </div>
     </div>
   );
