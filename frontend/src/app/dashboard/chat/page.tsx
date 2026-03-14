@@ -11,7 +11,7 @@ import {
   Plus, X, Send, Loader2, Bot, Paperclip, FileText,
   Image as ImageIcon, Trash2, LayoutTemplate, Rows3,
   Pin, ChevronDown, ChevronUp, Radio, ChevronDown as ChevronDownIcon,
-  Users, RefreshCw,
+  Users, RefreshCw, PinOff,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -50,6 +50,8 @@ interface ChatTab {
   groupAgents?: string[];
   groupStarted?: boolean;
   autoRound?: boolean;
+  // Tab pinning
+  tabPinned?: boolean;
 }
 
 // ─── LocalStorage Schema ───────────────────────────────────────────────────────
@@ -74,6 +76,7 @@ interface PersistedTab {
   sessionKey?: string;
   groupAgents?: string[];
   autoRound?: boolean;
+  tabPinned?: boolean;
 }
 
 const LS_KEY = 'clawdeck-chat-tabs';
@@ -209,6 +212,7 @@ function saveTabs(tabs: ChatTab[], activeTabId: string) {
       sessionKey: tab.sessionKey,
       groupAgents: tab.groupAgents,
       autoRound: tab.autoRound,
+      tabPinned: tab.tabPinned,
       messages: tab.messages.slice(-MAX_MESSAGES_PER_TAB).map((m) => ({
         id: m.id,
         role: m.role,
@@ -250,6 +254,7 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
       groupAgents: pt.groupAgents ?? [],
       groupStarted: false,
       autoRound: pt.autoRound ?? false,
+      tabPinned: pt.tabPinned ?? false,
       messages: (pt.messages ?? []).map((m) => ({
         id: m.id,
         role: m.role,
@@ -1643,6 +1648,16 @@ function ChatPage() {
     updateTab(tabId, (t) => ({ ...t, label: newLabel }));
   }, [updateTab]);
 
+  const pinTab = useCallback((tabId: string) => {
+    setTabs((prev) => {
+      const updated = prev.map((t) => t.id === tabId ? { ...t, tabPinned: !t.tabPinned } : t);
+      // Sort: pinned tabs first, then unpinned
+      const pinned = updated.filter((t) => t.tabPinned);
+      const unpinned = updated.filter((t) => !t.tabPinned);
+      return [...pinned, ...unpinned];
+    });
+  }, []);
+
   // ── File attach ─────────────────────────────────────────────────────────────
 
   const handleAttachClick = useCallback((tabId: string) => {
@@ -2058,12 +2073,14 @@ function ChatPage() {
           <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 min-w-0">
             <TabsList className="h-10 bg-transparent gap-0 p-0 flex-shrink-0">
               {tabs.map((tab) => (
-                <div key={tab.id} className="flex items-center">
+                <div key={tab.id} className="flex items-center group/tabtrigger">
                   <TabsTrigger
                     value={tab.id}
-                    className="relative h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 text-xs max-w-[160px]"
+                    className={`relative h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-3 text-xs max-w-[160px] ${tab.tabPinned ? 'border-b-2 border-amber-400/60' : ''}`}
                   >
-                    {tab.mode === 'channel' ? (
+                    {tab.tabPinned ? (
+                      <Pin className="h-3 w-3 mr-1.5 flex-shrink-0 text-amber-500" />
+                    ) : tab.mode === 'channel' ? (
                       <Radio className="h-3 w-3 mr-1.5 flex-shrink-0 text-blue-500" />
                     ) : tab.mode === 'group' ? (
                       <Users className="h-3 w-3 mr-1.5 flex-shrink-0 text-purple-500" />
@@ -2081,7 +2098,17 @@ function ChatPage() {
                       <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
                     )}
                     <button
-                      className="ml-2 rounded-full hover:bg-accent p-0.5 flex-shrink-0"
+                      className="ml-1 rounded-full hover:bg-accent p-0.5 flex-shrink-0 opacity-0 group-hover/tabtrigger:opacity-100 transition-opacity"
+                      title={tab.tabPinned ? 'Unpin tab' : 'Pin tab'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        pinTab(tab.id);
+                      }}
+                    >
+                      {tab.tabPinned ? <PinOff className="h-2.5 w-2.5 text-amber-500" /> : <Pin className="h-2.5 w-2.5" />}
+                    </button>
+                    <button
+                      className="ml-1 rounded-full hover:bg-accent p-0.5 flex-shrink-0"
                       onClick={(e) => {
                         e.stopPropagation();
                         closeTab(tab.id);
@@ -2101,9 +2128,11 @@ function ChatPage() {
             {tabs.map((tab) => (
               <div
                 key={tab.id}
-                className="flex items-center gap-1 px-2 py-1 rounded bg-muted/60 text-xs flex-shrink-0"
+                className={`flex items-center gap-1 px-2 py-1 rounded text-xs flex-shrink-0 ${tab.tabPinned ? 'bg-amber-500/10 border border-amber-400/30' : 'bg-muted/60'}`}
               >
-                {tab.mode === 'channel' ? (
+                {tab.tabPinned ? (
+                  <Pin className="h-3 w-3 text-amber-500" />
+                ) : tab.mode === 'channel' ? (
                   <Radio className="h-3 w-3 text-blue-500" />
                 ) : tab.mode === 'group' ? (
                   <Users className="h-3 w-3 text-purple-500" />
@@ -2120,6 +2149,13 @@ function ChatPage() {
                 {tab.mode === 'channel' && tab.sessionKey && (
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
                 )}
+                <button
+                  className="rounded-full hover:bg-accent p-0.5"
+                  title={tab.tabPinned ? 'Unpin tab' : 'Pin tab'}
+                  onClick={() => pinTab(tab.id)}
+                >
+                  {tab.tabPinned ? <PinOff className="h-2.5 w-2.5 text-amber-500" /> : <Pin className="h-2.5 w-2.5 opacity-50" />}
+                </button>
                 <button
                   className="rounded-full hover:bg-accent p-0.5"
                   onClick={() => closeTab(tab.id)}

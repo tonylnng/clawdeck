@@ -22,6 +22,7 @@ import {
   Search,
   FlaskConical,
   Clock,
+  Radio,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/chat',      icon: MessageSquare, label: '💬 Chat',     shortcut: 'g+c' },
   { href: '/dashboard/search',    icon: Search,        label: '🔍 Search',   shortcut: 'g+s' },
   { href: '/dashboard/logs',      icon: FileText,      label: '📋 Logs',     shortcut: 'g+l' },
+  { href: '/dashboard/monitor',   icon: Radio,         label: '📡 Monitor',  shortcut: 'g+o' },
   { href: '/dashboard/analytics', icon: BarChart2,     label: '📊 Analytics', shortcut: 'g+n' },
   { href: '/dashboard/playground',icon: FlaskConical,  label: '🧪 Playground', shortcut: 'g+p' },
   { href: '/dashboard/cron',      icon: Clock,         label: '⏰ Cron Jobs', shortcut: 'g+r' },
@@ -102,7 +104,7 @@ export default function DashboardLayout({
         <Image src="/logo.png" alt="ClawDeck" width={28} height={28} />
         <div>
           <span className="font-bold text-lg leading-none">ClawDeck</span>
-          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.5.3</span>
+          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.6.0</span>
         </div>
       </div>
 
