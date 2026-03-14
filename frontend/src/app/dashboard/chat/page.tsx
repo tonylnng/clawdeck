@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
+import React, { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -450,6 +450,7 @@ interface GroupChatMessageProps {
 }
 
 function GroupChatMessageBubble({ message, agentIndex }: GroupChatMessageProps) {
+  if (!message) return null;
   if (message.role === 'user') {
     return (
       <div className="flex justify-end mb-3">
@@ -460,9 +461,10 @@ function GroupChatMessageBubble({ message, agentIndex }: GroupChatMessageProps) 
     );
   }
 
-  const colorKey = getAgentColor(agentIndex);
-  const styles = GROUP_COLOR_STYLES[colorKey];
   const agentId = message.agentId || 'Agent';
+  const safeIndex = typeof agentIndex === 'number' && !isNaN(agentIndex) ? agentIndex : 0;
+  const colorKey = getAgentColor(safeIndex);
+  const styles = GROUP_COLOR_STYLES[colorKey];
   const initials = agentId.slice(0, 2).toUpperCase();
 
   return (
@@ -523,9 +525,9 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
     });
   }, [tab.groupAgents]);
 
-  const groupAgents = tab.groupAgents || [];
+  const groupAgents = tab.groupAgents ?? [];
   const canStart = groupAgents.length >= 2;
-  const isStarted = tab.groupStarted;
+  const isStarted = tab.groupStarted && groupAgents.length >= 2;
 
   const handleAddAgent = () => {
     const trimmed = agentInput.trim();
@@ -814,6 +816,7 @@ function SinglePanel({
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [showSessions, setShowSessions] = useState(false);
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [sessionKeyInput, setSessionKeyInput] = useState(tab.sessionKey || '');
   const sessionKeyInputRef = useRef<string>(tab.sessionKey || '');
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -911,6 +914,7 @@ function SinglePanel({
   }
 
   const loadSessionHistory = async (tabId: string, sessionKey: string) => {
+    setLoadingHistory(true);
     try {
       const res = await fetch(
         `/api/sessions/${encodeURIComponent(sessionKey)}/history?limit=50`,
@@ -937,6 +941,8 @@ function SinglePanel({
       }));
     } catch {
       // ignore
+    } finally {
+      setLoadingHistory(false);
     }
   };
 
@@ -1216,7 +1222,12 @@ function SinglePanel({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto">
         <div className={`${px} py-4`}>
-          {tab.messages.length === 0 ? (
+          {loadingHistory ? (
+            <div className="flex items-center justify-center h-32">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              <span className="ml-2 text-sm text-muted-foreground">Loading history...</span>
+            </div>
+          ) : tab.messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
               {isChannelMode ? (
                 <>
@@ -1224,7 +1235,7 @@ function SinglePanel({
                   <p className="text-sm">Channel mode</p>
                   <p className="text-xs mt-1 opacity-60">
                     {tab.sessionKey
-                      ? 'Loading history...'
+                      ? 'No messages yet'
                       : 'Enter a session key or click "Load" to browse sessions'}
                   </p>
                 </>
@@ -1499,9 +1510,50 @@ function InlineTabLabel({ label, onRename }: InlineTabLabelProps) {
   );
 }
 
+// ─── Error Boundary ────────────────────────────────────────────────────────────
+
+class ChatErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: '' };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('Chat crashed:', error, info);
+    // Clear bad localStorage state
+    try { localStorage.removeItem('clawdeck-chat-tabs'); } catch {}
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground p-8">
+          <p className="text-sm font-medium text-destructive">Chat encountered an error</p>
+          <p className="text-xs text-center">{this.state.error}</p>
+          <button
+            className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md"
+            onClick={() => {
+              try { localStorage.removeItem('clawdeck-chat-tabs'); } catch {}
+              this.setState({ hasError: false, error: '' });
+              window.location.reload();
+            }}
+          >
+            Reset &amp; Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function ChatPage() {
+function ChatPage() {
   const searchParams = useSearchParams();
   const [tabs, setTabs] = useState<ChatTab[]>([]);
   const [activeTab, setActiveTab] = useState<string>('');
@@ -1729,12 +1781,13 @@ export default function ChatPage() {
       }
     } catch (err) {
       console.error('Group chat error:', err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
       updateTab(tabId, (t) => ({
         ...t,
         messages: [...t.messages, {
           id: `msg-${Date.now()}-err`,
           role: 'assistant' as const,
-          content: `Group chat error: ${(err as Error).message || 'Please try again.'}`,
+          content: `Error: ${errorMsg}`,
           timestamp: new Date(),
         }],
       }));
@@ -2179,5 +2232,13 @@ export default function ChatPage() {
         </Tabs>
       )}
     </div>
+  );
+}
+
+export default function ChatPageWrapper() {
+  return (
+    <ChatErrorBoundary>
+      <ChatPage />
+    </ChatErrorBoundary>
   );
 }

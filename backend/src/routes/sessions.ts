@@ -11,22 +11,33 @@ router.use(redactMiddleware);
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
 
-async function invokeGatewayTool(tool: string, args: Record<string, unknown> = {}): Promise<unknown> {
-  const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${GATEWAY_TOKEN}`,
-    },
-    body: JSON.stringify({ tool, args }),
-  });
+async function invokeGatewayTool(tool: string, args: Record<string, unknown> = {}, timeoutMs = 15000): Promise<unknown> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gateway error ${res.status}: ${text}`);
+  try {
+    const res = await fetch(`${GATEWAY_URL}/tools/invoke`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+      },
+      body: JSON.stringify({ tool, args }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Gateway error ${res.status}: ${text}`);
+    }
+
+    return res.json();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
   }
-
-  return res.json();
 }
 
 interface RawMessage {
@@ -152,7 +163,7 @@ function normalizeMessages(raw: unknown, sessionKey?: string): NormalizedMessage
       timestamp,
       source,
     };
-  });
+  }).filter((m) => m.content.trim().length > 0);
 }
 
 // GET /api/sessions - list all sessions
