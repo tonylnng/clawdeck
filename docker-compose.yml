@@ -15,6 +15,7 @@ services:
       - /home/tonic/.openclaw/workspace-tonic-ai-tech:/home/tonic/.openclaw/workspace-tonic-ai-tech:rw
       - /home/tonic/.openclaw/workspace-tonic-ai-workflow:/home/tonic/.openclaw/workspace-tonic-ai-workflow:rw
       - /home/tonic/.openclaw/agents:/home/tonic/.openclaw/agents:rw
+      - /home/tonic/.openclaw/openclaw.json:/home/tonic/.openclaw/openclaw.json:rw
       - /tmp/openclaw:/tmp/openclaw:ro
     env_file:
       - .env
