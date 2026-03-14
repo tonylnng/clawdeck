@@ -992,29 +992,7 @@ function SinglePanel({
 
   const px = compact ? 'px-2' : 'px-3 md:px-6';
 
-  // If group mode, delegate to GroupChatPanel
-  if (isGroupMode) {
-    return (
-      <div className="flex flex-col h-full overflow-hidden">
-        {/* Mode toggle header */}
-        <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0">
-          <div className="flex items-center gap-2">
-            <ModeToggle tab={tab} onUpdateTab={onUpdateTab} />
-          </div>
-        </div>
-        <div className="flex-1 overflow-hidden">
-          <GroupChatPanel
-            tab={tab}
-            onUpdateTab={onUpdateTab}
-            onGroupSend={onGroupSend}
-            onClear={onClear}
-            compact={compact}
-          />
-        </div>
-      </div>
-    );
-  }
-
+  // ── Hooks that must come before any conditional return ─────────────────────
   const handleInputChange = (value: string) => {
     onUpdateTab(tab.id, (t) => ({ ...t, input: value }));
     if (value.startsWith('/')) {
@@ -1120,6 +1098,28 @@ function SinglePanel({
       }, 2000);
     }
   }, []);
+
+  // ── Group mode: render after ALL hooks are declared ────────────────────────
+  if (isGroupMode) {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <ModeToggle tab={tab} onUpdateTab={onUpdateTab} />
+          </div>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <GroupChatPanel
+            tab={tab}
+            onUpdateTab={onUpdateTab}
+            onGroupSend={onGroupSend}
+            onClear={onClear}
+            compact={compact}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -1528,8 +1528,7 @@ class ChatErrorBoundary extends React.Component<
     return { hasError: true, error: error.message };
   }
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error('Chat crashed:', error, info);
-    // Clear bad localStorage state
+    console.error('Chat crashed:', error.message, error.stack, info.componentStack);
     try { localStorage.removeItem('clawdeck-chat-tabs'); } catch {}
   }
   render() {
@@ -1537,7 +1536,7 @@ class ChatErrorBoundary extends React.Component<
       return (
         <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground p-8">
           <p className="text-sm font-medium text-destructive">Chat encountered an error</p>
-          <p className="text-xs text-center">{this.state.error}</p>
+          <pre className="text-[10px] text-center bg-muted rounded p-2 max-w-md overflow-auto max-h-32 text-left whitespace-pre-wrap">{this.state.error}</pre>
           <button
             className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md"
             onClick={() => {
