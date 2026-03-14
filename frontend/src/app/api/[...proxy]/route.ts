@@ -53,14 +53,40 @@ async function proxyRequest(req: NextRequest, pathSegments: string[], method: st
 
     const resContentType = res.headers.get('content-type') || '';
 
-    // Handle SSE streaming
+    // Handle SSE streaming — pipe body directly so chunks flush immediately
     if (resContentType.includes('text/event-stream')) {
-      return new NextResponse(res.body, {
-        status: res.status,
+      if (!res.body) {
+        return new NextResponse('No stream body', { status: 502 });
+      }
+
+      // Use TransformStream to pass through chunks without buffering
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const reader = res.body.getReader();
+
+      // Pump chunks in the background
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              await writer.close();
+              break;
+            }
+            await writer.write(value);
+          }
+        } catch {
+          try { await writer.abort(); } catch { /* ignore */ }
+        }
+      })();
+
+      return new NextResponse(readable, {
+        status: 200,
         headers: {
           'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
+          'Cache-Control': 'no-cache, no-transform',
           'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
         },
       });
     }

@@ -199,6 +199,7 @@ function LogViewer({ fetchUrl, streamUrl }: LogViewerProps) {
     es.onmessage = (event) => {
       try {
         const parsed = JSON.parse(event.data);
+        if (parsed.type === 'connected' || parsed.type === 'rotate') return;
         if (parsed.type === 'line') {
           const logLine = parseLogLine(parsed.data);
           setLines((prev) => {

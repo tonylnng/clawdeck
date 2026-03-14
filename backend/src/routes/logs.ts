@@ -85,25 +85,71 @@ router.get('/gateway', redactMiddleware, async (req: Request, res: Response) => 
   }
 });
 
-// GET /api/logs/agents/:id - last 200 lines filtered by agentId
+// GET /api/logs/agents/:id - recent session messages for an agent (from .jsonl files)
 router.get('/agents/:id', redactMiddleware, async (req: Request, res: Response) => {
   const agentId = req.params.id;
-  const logPath = getLogFilePath();
   const limit = parseInt(req.query.limit as string || '200', 10);
+  // OPENCLAW_HOME may be '/home/user' or '/home/user/.openclaw' — handle both
+  const rawHome = process.env.OPENCLAW_HOME || '/home/tonic';
+  const openclaw_home = rawHome.endsWith('.openclaw') ? rawHome : path.join(rawHome, '.openclaw');
+  const sessionsDir = path.join(openclaw_home, 'agents', agentId, 'sessions');
 
   try {
-    const lines = await tailFile(logPath, limit, agentId);
-    const parsed = lines.map(line => {
-      try {
-        return JSON.parse(redactString(line));
-      } catch {
-        return { raw: redactString(line) };
-      }
-    });
+    if (!fs.existsSync(sessionsDir)) {
+      return res.json({ lines: [], agentId, source: 'sessions', note: `No sessions dir: ${sessionsDir}` });
+    }
 
-    res.json({ lines: parsed, path: logPath, agentId });
+    // Find active .jsonl files (not deleted/reset), sorted by mtime desc
+    const files = fs.readdirSync(sessionsDir)
+      .filter(f => f.endsWith('.jsonl') && !f.includes('.deleted') && !f.includes('.reset'))
+      .map(f => ({ name: f, path: path.join(sessionsDir, f), mtime: fs.statSync(path.join(sessionsDir, f)).mtime }))
+      .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+      .slice(0, 5); // Read last 5 sessions
+
+    const allLines: { raw: string; level?: string; timestamp?: string; message?: string }[] = [];
+
+    for (const file of files) {
+      const content = fs.readFileSync(file.path, 'utf-8');
+      const fileLines = content.split('\n').filter(l => l.trim());
+      for (const line of fileLines) {
+        try {
+          const obj = JSON.parse(line);
+          // Only process message-type entries
+          if (obj.type !== 'message') continue;
+          const msg = obj.message || obj;
+          const role = msg.role;
+          if (!role || role === 'tool') continue;
+
+          // Extract text content from various formats
+          let content = '';
+          if (typeof msg.content === 'string') {
+            content = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            content = msg.content
+              .filter((c: { type?: string; text?: string }) => c.type === 'text' && c.text)
+              .map((c: { text: string }) => c.text)
+              .join(' ');
+          }
+          if (!content.trim()) continue;
+
+          const ts = obj.timestamp || '';
+          allLines.push({
+            raw: redactString(`[${role.toUpperCase()}] ${content.slice(0, 300)}`),
+            level: role === 'assistant' ? 'info' : 'debug',
+            timestamp: ts ? new Date(ts).toISOString() : undefined,
+            message: redactString(content.slice(0, 300)),
+          });
+        } catch {
+          // skip malformed lines
+        }
+      }
+    }
+
+    // Return last N lines
+    const result = allLines.slice(-limit);
+    res.json({ lines: result, agentId, source: 'sessions', sessionFiles: files.map(f => f.name) });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to read log file', detail: String(err) });
+    res.status(500).json({ error: 'Failed to read agent sessions', detail: String(err) });
   }
 });
 
@@ -113,15 +159,18 @@ router.get('/stream', async (req: Request, res: Response) => {
   const logPath = getLogFilePath();
 
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  // Send heartbeat
+  // Send immediate connected event so browser onopen fires right away
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+
+  // Send heartbeat more frequently to keep connection alive through proxies
   const heartbeat = setInterval(() => {
     res.write(': heartbeat\n\n');
-  }, 15000);
+  }, 5000);
 
   // Send initial tail (50 lines)
   try {
