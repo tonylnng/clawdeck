@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ChatMessage } from '@/components/chat/ChatMessage';
-import { Plus, X, Send, Loader2, Bot, Paperclip, FileText, Image as ImageIcon } from 'lucide-react';
+import { Plus, X, Send, Loader2, Bot, Paperclip, FileText, Image as ImageIcon, Trash2 } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -76,6 +76,10 @@ export default function ChatPage() {
     const tab = createTab();
     setTabs((prev) => [...prev, tab]);
     setActiveTab(tab.id);
+  };
+
+  const clearMessages = (tabId: string) => {
+    updateTab(tabId, (t) => ({ ...t, messages: [] }));
   };
 
   const closeTab = (tabId: string) => {
@@ -339,7 +343,7 @@ export default function ChatPage() {
               <div className="flex items-center gap-2 max-w-xl">
                 <span className="text-xs text-muted-foreground whitespace-nowrap">Agent:</span>
                 <Input
-                  className="h-7 text-xs"
+                  className="h-7 text-xs flex-1"
                   placeholder="Agent ID (leave empty for default)"
                   value={tab.agentId}
                   onChange={(e) =>
@@ -350,6 +354,16 @@ export default function ChatPage() {
                     }))
                   }
                 />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => clearMessages(tab.id)}
+                  title="Clear conversation"
+                  disabled={tab.messages.length === 0}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
               </div>
             </div>
 

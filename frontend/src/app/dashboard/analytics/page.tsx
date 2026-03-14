@@ -5,7 +5,17 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, Bot, MessageSquare, Hash, Cpu } from 'lucide-react';
+import { RefreshCw, Bot, MessageSquare, Hash, Cpu, TrendingUp } from 'lucide-react';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+} from 'recharts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,10 +52,12 @@ function formatNumber(n: number): string {
 }
 
 function shortModel(model: string): string {
-  // Strip provider prefix e.g. "openrouter/anthropic/claude-sonnet-4.6" → "claude-sonnet-4.6"
   const parts = model.split('/');
   return parts[parts.length - 1] ?? model;
 }
+
+// Chart colours per agent
+const AGENT_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#14b8a6'];
 
 // ─── Summary Card ─────────────────────────────────────────────────────────────
 
@@ -70,6 +82,61 @@ function SummaryCard({ title, value, icon, sub }: SummaryCardProps) {
         {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Token Bar Chart ──────────────────────────────────────────────────────────
+
+function TokenBarChart({ agents }: { agents: AgentUsage[] }) {
+  const data = agents
+    .slice()
+    .sort((a, b) => b.estimatedTokens - a.estimatedTokens)
+    .map((a) => ({
+      name: a.id,
+      tokens: a.estimatedTokens,
+      messages: a.messages,
+      sessions: a.sessions,
+    }));
+
+  if (data.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground text-center py-8">No data</p>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+        <XAxis
+          dataKey="name"
+          tick={{ fontSize: 11 }}
+          className="fill-muted-foreground"
+        />
+        <YAxis
+          tickFormatter={(v) => formatNumber(v)}
+          tick={{ fontSize: 10 }}
+          className="fill-muted-foreground"
+          width={44}
+        />
+        <Tooltip
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          formatter={(value: any, name: any) => [formatNumber(Number(value)), name === 'tokens' ? 'Est. Tokens' : name]}
+          contentStyle={{
+            fontSize: 12,
+            borderRadius: 8,
+            border: '1px solid hsl(var(--border))',
+            background: 'hsl(var(--card))',
+            color: 'hsl(var(--foreground))',
+          }}
+        />
+        <Bar dataKey="tokens" radius={[4, 4, 0, 0]}>
+          {data.map((_, idx) => (
+            <Cell key={idx} fill={AGENT_COLORS[idx % AGENT_COLORS.length]} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
   );
 }
 
@@ -117,12 +184,10 @@ export default function AnalyticsPage() {
     }
   }, [router]);
 
-  // Initial load
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  // Auto-refresh every 30s
   useEffect(() => {
     const interval = setInterval(fetchData, 30_000);
     return () => clearInterval(interval);
@@ -206,6 +271,25 @@ export default function AnalyticsPage() {
           </div>
         </section>
 
+        {/* Token Usage Chart */}
+        <section>
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-1.5">
+            <TrendingUp className="h-3.5 w-3.5" />
+            Token Usage by Agent
+          </h2>
+          <Card>
+            <CardContent className="pt-4 px-4 pb-2">
+              {!usage || usage.agents.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">
+                  {loading ? 'Loading...' : 'No agent data available'}
+                </p>
+              ) : (
+                <TokenBarChart agents={usage.agents} />
+              )}
+            </CardContent>
+          </Card>
+        </section>
+
         {/* Agent Usage Table */}
         <section>
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">
@@ -241,7 +325,10 @@ export default function AnalyticsPage() {
                           >
                             <td className="px-4 py-2.5">
                               <div className="flex items-center gap-2">
-                                <Bot className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                                <span
+                                  className="w-2 h-2 rounded-full flex-shrink-0"
+                                  style={{ background: AGENT_COLORS[idx % AGENT_COLORS.length] }}
+                                />
                                 <span className="font-medium">{agent.id}</span>
                               </div>
                             </td>

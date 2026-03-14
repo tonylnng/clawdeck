@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { RefreshCw, Wifi, WifiOff, Trash2, Terminal, Bot } from 'lucide-react';
+import { RefreshCw, Wifi, WifiOff, Trash2, Terminal, Bot, Copy, Check } from 'lucide-react';
 
 interface LogLine {
   id: string;
@@ -81,6 +81,53 @@ function levelBadgeVariant(level?: string): 'destructive' | 'default' | 'seconda
     default:
       return 'outline';
   }
+}
+
+// ─────────────────────────────────────────────
+// Copyable log line row
+// ─────────────────────────────────────────────
+function LogLineRow({ line }: { line: LogLine }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(line.raw);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <div
+      className={`group log-line flex gap-2 items-start hover:bg-muted/30 px-1 rounded ${levelColor(line.level)}`}
+    >
+      {line.timestamp && (
+        <span className="text-muted-foreground flex-shrink-0 w-[135px]">
+          {String(line.timestamp).slice(0, 19).replace('T', ' ')}
+        </span>
+      )}
+      {line.level && (
+        <Badge
+          variant={levelBadgeVariant(line.level)}
+          className="text-[10px] h-4 px-1 flex-shrink-0 uppercase leading-none"
+        >
+          {line.level.slice(0, 5)}
+        </Badge>
+      )}
+      <span className="flex-1 break-all">
+        {line.message || line.raw}
+      </span>
+      <button
+        onClick={handleCopy}
+        className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity flex-shrink-0 p-0.5 rounded"
+        title="Copy line"
+      >
+        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────
@@ -283,27 +330,7 @@ function LogViewer({ fetchUrl, streamUrl }: LogViewerProps) {
           </p>
         ) : (
           filteredLines.map((line) => (
-            <div
-              key={line.id}
-              className={`log-line flex gap-2 items-start hover:bg-muted/30 px-1 rounded ${levelColor(line.level)}`}
-            >
-              {line.timestamp && (
-                <span className="text-muted-foreground flex-shrink-0 w-[135px]">
-                  {String(line.timestamp).slice(0, 19).replace('T', ' ')}
-                </span>
-              )}
-              {line.level && (
-                <Badge
-                  variant={levelBadgeVariant(line.level)}
-                  className="text-[10px] h-4 px-1 flex-shrink-0 uppercase leading-none"
-                >
-                  {line.level.slice(0, 5)}
-                </Badge>
-              )}
-              <span className="flex-1 break-all">
-                {line.message || line.raw}
-              </span>
-            </div>
+            <LogLineRow key={line.id} line={line} />
           ))
         )}
       </div>

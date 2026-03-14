@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -25,16 +25,16 @@ import {
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { href: '/dashboard/agents', icon: Bot, label: '🤖 Agents' },
-  { href: '/dashboard/chat', icon: MessageSquare, label: '💬 Chat' },
-  { href: '/dashboard/search', icon: Search, label: '🔍 Search' },
-  { href: '/dashboard/logs', icon: FileText, label: '📋 Logs' },
-  { href: '/dashboard/analytics', icon: BarChart2, label: '📊 Analytics' },
-  { href: '/dashboard/playground', icon: FlaskConical, label: '🧪 Playground' },
-  { href: '/dashboard/cron', icon: Clock, label: '⏰ Cron Jobs' },
-  { href: '/dashboard/workspace', icon: Folder, label: '📁 Workspace' },
-  { href: '/dashboard/memory', icon: Brain, label: '🧠 Memory' },
-  { href: '/dashboard/setup', icon: Settings, label: '⚙️ Setup' },
+  { href: '/dashboard/agents',    icon: Bot,          label: '🤖 Agents',    shortcut: 'g+a' },
+  { href: '/dashboard/chat',      icon: MessageSquare, label: '💬 Chat',     shortcut: 'g+c' },
+  { href: '/dashboard/search',    icon: Search,        label: '🔍 Search',   shortcut: 'g+s' },
+  { href: '/dashboard/logs',      icon: FileText,      label: '📋 Logs',     shortcut: 'g+l' },
+  { href: '/dashboard/analytics', icon: BarChart2,     label: '📊 Analytics', shortcut: 'g+n' },
+  { href: '/dashboard/playground',icon: FlaskConical,  label: '🧪 Playground', shortcut: 'g+p' },
+  { href: '/dashboard/cron',      icon: Clock,         label: '⏰ Cron Jobs', shortcut: 'g+r' },
+  { href: '/dashboard/workspace', icon: Folder,        label: '📁 Workspace', shortcut: 'g+w' },
+  { href: '/dashboard/memory',    icon: Brain,         label: '🧠 Memory',   shortcut: 'g+m' },
+  { href: '/dashboard/setup',     icon: Settings,      label: '⚙️ Setup',    shortcut: 'g+u' },
 ];
 
 export default function DashboardLayout({
@@ -57,36 +57,76 @@ export default function DashboardLayout({
       .catch(() => router.push('/login'));
   }, [router]);
 
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  useEffect(() => {
+    let gPressed = false;
+    let gTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      if (e.key === 'g' || e.key === 'G') {
+        gPressed = true;
+        if (gTimer) clearTimeout(gTimer);
+        gTimer = setTimeout(() => { gPressed = false; }, 1500);
+        return;
+      }
+
+      if (gPressed) {
+        const match = NAV_ITEMS.find(
+          (item) => item.shortcut === `g+${e.key.toLowerCase()}`
+        );
+        if (match) {
+          e.preventDefault();
+          router.push(match.href);
+          gPressed = false;
+          if (gTimer) clearTimeout(gTimer);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [router]);
+
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     router.push('/login');
   };
 
-  const Sidebar = ({ mobile = false }) => (
+  const Sidebar = ({ mobile = false }: { mobile?: boolean }) => (
     <div className={`flex flex-col h-full ${mobile ? 'p-4' : 'p-4'}`}>
       {/* Logo */}
       <div className="flex items-center gap-2 mb-6">
         <Image src="/logo.png" alt="ClawDeck" width={28} height={28} />
-        <span className="font-bold text-lg">ClawDeck</span>
+        <div>
+          <span className="font-bold text-lg leading-none">ClawDeck</span>
+          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.0.0</span>
+        </div>
       </div>
 
       {/* Nav */}
       <nav className="flex-1 space-y-1">
-        {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
+        {NAV_ITEMS.map(({ href, icon: Icon, label, shortcut }) => {
           const active = pathname.startsWith(href);
           return (
             <Link
               key={href}
               href={href}
               onClick={() => setSidebarOpen(false)}
-              className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              title={`${label} (${shortcut})`}
+              className={`group flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                 active
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent'
               }`}
             >
               <Icon className="h-4 w-4 flex-shrink-0" />
-              {label}
+              <span className="flex-1">{label}</span>
+              <span className={`text-[9px] font-mono opacity-0 group-hover:opacity-60 transition-opacity flex-shrink-0 ${active ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
+                {shortcut}
+              </span>
             </Link>
           );
         })}
@@ -156,6 +196,9 @@ export default function DashboardLayout({
 
         {/* Desktop Header */}
         <header className="hidden md:flex items-center justify-end px-4 py-2 border-b bg-card">
+          <span className="text-xs text-muted-foreground mr-auto pl-1 font-mono opacity-60">
+            Press <kbd className="px-1 py-0.5 rounded bg-muted border text-[10px]">g</kbd> then a key to navigate
+          </span>
           <ThemeToggle />
         </header>
 
