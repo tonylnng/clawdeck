@@ -1,6 +1,6 @@
 {
   "name": "clawdeck-backend",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "ClawDeck Backend",
   "main": "dist/index.js",
   "scripts": {

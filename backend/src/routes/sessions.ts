@@ -32,7 +32,7 @@ async function invokeGatewayTool(tool: string, args: Record<string, unknown> = {
 interface RawMessage {
   id?: string;
   role?: string;
-  content?: string | { text?: string };
+  content?: string | Array<{type: string; text?: string}> | { text?: string };
   text?: string;
   timestamp?: number | string;
   createdAt?: number | string;
@@ -47,18 +47,69 @@ interface NormalizedMessage {
   source?: string;
 }
 
-function normalizeMessages(raw: unknown, sessionKey?: string): NormalizedMessage[] {
-  if (!Array.isArray(raw)) return [];
+function extractRawMessages(result: unknown): unknown[] {
+  const r = result as Record<string, unknown>;
 
-  return raw.map((msg: RawMessage, idx: number) => {
+  // Direct array
+  if (Array.isArray(r)) {
+    return r;
+  }
+
+  // result.result exists
+  if (r?.result) {
+    const inner = r.result as Record<string, unknown>;
+
+    // result.result is an array
+    if (Array.isArray(inner)) {
+      return inner;
+    }
+
+    // result.result.details.messages (actual OpenClaw format)
+    const details = inner?.details as Record<string, unknown> | undefined;
+    if (Array.isArray(details?.messages)) {
+      return details.messages as unknown[];
+    }
+
+    // result.result.messages
+    if (Array.isArray(inner?.messages)) {
+      return inner.messages as unknown[];
+    }
+
+    // result.result.history
+    if (Array.isArray(inner?.history)) {
+      return inner.history as unknown[];
+    }
+
+    // Last resort: find any array in inner
+    for (const val of Object.values(inner)) {
+      if (Array.isArray(val) && val.length > 0) {
+        return val as unknown[];
+      }
+    }
+  }
+
+  return [];
+}
+
+function normalizeMessages(raw: unknown, sessionKey?: string): NormalizedMessage[] {
+  const msgs = Array.isArray(raw) ? raw : extractRawMessages(raw);
+  if (msgs.length === 0) return [];
+
+  return msgs.map((msg: RawMessage, idx: number) => {
     const role: 'user' | 'assistant' =
       msg.role === 'user' || msg.role === 'assistant' ? msg.role : 'assistant';
 
     let content = '';
     if (typeof msg.content === 'string') {
       content = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      // Handle content array: [{type:'text',text:'...'}]
+      content = (msg.content as Array<{type: string; text?: string}>)
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text || '')
+        .join('');
     } else if (typeof msg.content === 'object' && msg.content !== null) {
-      content = msg.content.text || JSON.stringify(msg.content);
+      content = (msg.content as {text?: string}).text || JSON.stringify(msg.content);
     } else if (typeof msg.text === 'string') {
       content = msg.text;
     }
@@ -152,16 +203,10 @@ router.get('/:key(*)/history', async (req: Request, res: Response) => {
     const result = await invokeGatewayTool('sessions_history', {
       sessionKey: key,
       limit,
-    }) as { result?: { messages?: unknown[]; history?: unknown[] } | unknown[] };
+    });
 
-    // Normalize messages from various possible shapes
-    let rawMessages: unknown = [];
-    if (Array.isArray(result)) {
-      rawMessages = result;
-    } else if (result?.result) {
-      const r = result.result as { messages?: unknown[]; history?: unknown[] };
-      rawMessages = r?.messages ?? r?.history ?? result.result;
-    }
+    const rawMessages = extractRawMessages(result);
+    console.log(`[sessions/history] sessionKey=${key}, extracted ${rawMessages.length} messages`);
 
     const messages = normalizeMessages(rawMessages, key);
     res.json({ messages, sessionKey: key });
@@ -204,16 +249,9 @@ router.get('/:key(*)/poll', async (req: Request, res: Response) => {
     const result = await invokeGatewayTool('sessions_history', {
       sessionKey: key,
       limit,
-    }) as { result?: { messages?: unknown[]; history?: unknown[] } | unknown[] };
+    });
 
-    let rawMessages: unknown = [];
-    if (Array.isArray(result)) {
-      rawMessages = result;
-    } else if (result?.result) {
-      const r = result.result as { messages?: unknown[]; history?: unknown[] };
-      rawMessages = r?.messages ?? r?.history ?? result.result;
-    }
-
+    const rawMessages = extractRawMessages(result);
     let messages = normalizeMessages(rawMessages, key);
 
     // Filter by since timestamp if provided

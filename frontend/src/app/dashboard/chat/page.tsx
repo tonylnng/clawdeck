@@ -1621,14 +1621,18 @@ export default function ChatPage() {
   // ── Group Chat Send ─────────────────────────────────────────────────────────
 
   const sendGroupMessage = useCallback(async (tabId: string) => {
-    // Use tabsRef.current to always get fresh state (avoids stale closure)
+    // ALWAYS read fresh state from tabsRef to avoid stale closures
     const tab = tabsRef.current.find((t) => t.id === tabId);
-    if (!tab || !tab.input.trim() || tab.streaming) return;
+    if (!tab) return;
+    if (!tab.input.trim() || tab.streaming) return;
     if (!tab.groupAgents || tab.groupAgents.length < 2) return;
 
     const userContent = tab.input.trim();
+    const groupAgents = [...tab.groupAgents]; // snapshot agents at call time
+    const autoRound = tab.autoRound ?? false; // snapshot autoRound at call time
+
     const isFirstMessage = tab.messages.length === 0;
-    const groupAgents = tab.groupAgents;
+    const newLabel = isFirstMessage ? autoLabel(userContent) : undefined;
 
     const userMsg: Message = {
       id: `msg-${Date.now()}-user`,
@@ -1636,8 +1640,6 @@ export default function ChatPage() {
       content: userContent,
       timestamp: new Date(),
     };
-
-    const newLabel = isFirstMessage ? autoLabel(userContent) : undefined;
 
     updateTab(tabId, (t) => ({
       ...t,
@@ -1647,8 +1649,9 @@ export default function ChatPage() {
       ...(newLabel ? { label: newLabel } : {}),
     }));
 
-    const sendRound = async (prompt: string, currentHistory: Message[]) => {
-      const historyPayload = currentHistory.map((m) => ({
+    // sendRound: takes explicit agents param — no outer tab closure
+    const sendRound = async (prompt: string, historyMessages: Message[], agents: string[]) => {
+      const historyPayload = historyMessages.map((m) => ({
         role: m.role,
         content: m.content,
         agentId: m.agentId,
@@ -1659,14 +1662,14 @@ export default function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          agents: groupAgents,
+          agents,
           message: prompt,
           history: historyPayload,
         }),
       });
 
       if (!res.ok || !res.body) {
-        throw new Error('Group chat request failed');
+        throw new Error(`Group chat request failed: ${res.status}`);
       }
 
       const reader = res.body.getReader();
@@ -1693,7 +1696,7 @@ export default function ChatPage() {
             };
             if (event.done) continue;
             if (event.agentId && event.content !== undefined) {
-              const agentIdx = groupAgents.indexOf(event.agentId);
+              const agentIdx = agents.indexOf(event.agentId);
               const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
               const agentMsg: Message = {
                 id: `msg-${Date.now()}-${event.agentId}-${Math.random()}`,
@@ -1716,35 +1719,29 @@ export default function ChatPage() {
     };
 
     try {
-      // Snapshot history before user message (read from tabsRef for freshness)
-      const currentTab = tabsRef.current.find((t) => t.id === tabId);
-      const history = currentTab ? [...currentTab.messages] : [];
+      // Read fresh history from tabsRef before sending (includes userMsg just added)
+      const historyBeforeUser = tabsRef.current.find((t) => t.id === tabId)?.messages ?? [];
+      await sendRound(userContent, historyBeforeUser, groupAgents);
 
-      // First round: respond to user message
-      await sendRound(userContent, history);
-
-      // Auto Round: agents discuss among themselves
-      if (tab.autoRound) {
-        const updatedTab = tabsRef.current.find((t) => t.id === tabId);
-        const allMessages = updatedTab ? updatedTab.messages : [];
-        await sendRound('[Continue the discussion]', allMessages);
+      if (autoRound) {
+        const allMessages = tabsRef.current.find((t) => t.id === tabId)?.messages ?? [];
+        await sendRound('[Continue the discussion]', allMessages, groupAgents);
       }
     } catch (err) {
       console.error('Group chat error:', err);
-      const errMsg: Message = {
-        id: `msg-${Date.now()}-err`,
-        role: 'assistant',
-        content: 'Group chat error. Please try again.',
-        timestamp: new Date(),
-      };
       updateTab(tabId, (t) => ({
         ...t,
-        messages: [...t.messages, errMsg],
+        messages: [...t.messages, {
+          id: `msg-${Date.now()}-err`,
+          role: 'assistant' as const,
+          content: `Group chat error: ${(err as Error).message || 'Please try again.'}`,
+          timestamp: new Date(),
+        }],
       }));
     } finally {
       updateTab(tabId, (t) => ({ ...t, streaming: false }));
     }
-  }, [updateTab]);
+  }, [updateTab]); // Only updateTab as dependency
 
   // ── Send message (agent/channel) ────────────────────────────────────────────
 
