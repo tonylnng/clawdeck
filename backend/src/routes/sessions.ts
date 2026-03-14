@@ -263,12 +263,31 @@ router.post('/:key(*)/send', async (req: Request, res: Response) => {
   }
 
   try {
-    const result = await invokeGatewayTool('sessions_send', {
-      sessionKey: key,
-      message,
+    // sessions_send tool doesn't exist in this gateway version.
+    // Route the message via /v1/chat/completions with the session key instead.
+    const upstream = await fetch(`${GATEWAY_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+      },
+      body: JSON.stringify({
+        model: 'default',
+        stream: false,
+        messages: [{ role: 'user', content: message }],
+        session: key,
+      }),
+      signal: AbortSignal.timeout(30000),
     });
 
-    res.json({ ok: true, result });
+    if (!upstream.ok) {
+      const errText = await upstream.text();
+      throw new Error(`Gateway error ${upstream.status}: ${errText}`);
+    }
+
+    const data = await upstream.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const reply = data?.choices?.[0]?.message?.content || '';
+    res.json({ ok: true, reply });
   } catch (err) {
     console.error('Failed to send session message:', err);
     res.status(502).json({ error: 'Failed to reach gateway', detail: String(err) });

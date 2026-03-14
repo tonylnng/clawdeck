@@ -386,46 +386,50 @@ interface SessionsDropdownProps {
 function SessionsDropdown({ sessions, onSelect, onClose }: SessionsDropdownProps) {
   if (sessions.length === 0) {
     return (
-      <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 p-3">
+      <div className="fixed mt-1 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-[200] p-4 w-[480px]">
         <p className="text-xs text-muted-foreground text-center">No sessions found</p>
       </div>
     );
   }
 
   return (
-    <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-lg shadow-lg overflow-hidden z-50 max-h-64 overflow-y-auto min-w-[320px]">
+    <div className="fixed mt-1 bg-popover border border-border rounded-lg shadow-xl overflow-hidden z-[200] w-[520px] max-h-[60vh] flex flex-col"
+      style={{ top: 'auto', left: 'auto' }}
+    >
       {/* Header */}
-      <div className="px-2 py-1.5 border-b bg-muted/40 flex-shrink-0">
-        <span className="text-[10px] text-muted-foreground font-medium">
+      <div className="px-3 py-2 border-b bg-muted/40 flex-shrink-0 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground font-medium">
           {sessions.length} session{sessions.length !== 1 ? 's' : ''} — sorted by last active
         </span>
+        <span className="text-[10px] text-muted-foreground">Click to connect</span>
       </div>
-      <div className="p-1">
+      <div className="overflow-y-auto flex-1 p-1">
         {sessions.map((s) => (
           <button
             key={s.key}
-            className="w-full flex items-start gap-2 px-3 py-2 rounded-md text-left hover:bg-accent transition-colors"
+            className="w-full flex items-start gap-3 px-3 py-2.5 rounded-md text-left hover:bg-accent transition-colors border border-transparent hover:border-border/50 mb-0.5"
             onClick={() => {
               onSelect(s.key, s.label);
               onClose();
             }}
           >
-            <Radio className="h-3 w-3 text-muted-foreground flex-shrink-0 mt-0.5" />
+            <Radio className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
               {/* Row 1: label + channel badge */}
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <span className="text-xs font-medium truncate">{s.label}</span>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-sm font-medium">{s.label}</span>
                 {s.channel && s.channel !== 'unknown' && (
-                  <span className={`px-1.5 py-0.5 rounded border text-[9px] font-medium flex-shrink-0 ${channelBadgeColor(s.channel)}`}>
+                  <span className={`px-2 py-0.5 rounded-full border text-[10px] font-medium flex-shrink-0 ${channelBadgeColor(s.channel)}`}>
                     {s.channel}
                   </span>
                 )}
               </div>
-              {/* Row 2: session ID */}
-              <div className="text-[10px] text-muted-foreground font-mono truncate">{s.key}</div>
+              {/* Row 2: full session key */}
+              <div className="text-[11px] text-muted-foreground font-mono break-all leading-relaxed">{s.key}</div>
               {/* Row 3: last active */}
               {s.updatedAt && (
-                <div className="text-[10px] text-muted-foreground mt-0.5">
+                <div className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500/60 flex-shrink-0" />
                   Last active: {new Date(s.updatedAt).toLocaleString([], {
                     month: 'short',
                     day: 'numeric',
@@ -1848,7 +1852,22 @@ function ChatPage() {
             ],
           }));
         } else {
-          updateTab(tabId, (t) => ({ ...t, streaming: false }));
+          const data = await res.json().catch(() => ({})) as { reply?: string };
+          if (data.reply) {
+            updateTab(tabId, (t) => ({
+              ...t,
+              streaming: false,
+              messages: [...t.messages, {
+                id: `msg-${Date.now()}-reply`,
+                role: 'assistant' as const,
+                content: data.reply!,
+                timestamp: new Date(),
+                source: tab.sessionKey?.split(':')?.[2],
+              }],
+            }));
+          } else {
+            updateTab(tabId, (t) => ({ ...t, streaming: false }));
+          }
         }
       } catch {
         updateTab(tabId, (t) => ({ ...t, streaming: false }));
@@ -2238,7 +2257,9 @@ function ChatPage() {
 export default function ChatPageWrapper() {
   return (
     <ChatErrorBoundary>
-      <ChatPage />
+      <React.Suspense fallback={<div className="flex items-center justify-center h-full"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}>
+        <ChatPage />
+      </React.Suspense>
     </ChatErrorBoundary>
   );
 }
