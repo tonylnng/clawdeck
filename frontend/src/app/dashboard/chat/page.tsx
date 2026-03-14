@@ -11,6 +11,7 @@ import {
   Plus, X, Send, Loader2, Bot, Paperclip, FileText,
   Image as ImageIcon, Trash2, LayoutTemplate, Rows3,
   Pin, ChevronDown, ChevronUp, Radio, ChevronDown as ChevronDownIcon,
+  Users, RefreshCw,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -22,6 +23,8 @@ interface Message {
   timestamp: Date;
   pinned?: boolean;
   source?: string; // channel source badge e.g. "telegram"
+  agentId?: string; // group chat: which agent sent this
+  color?: string;   // group chat: agent color
   attachment?: {
     type: 'image' | 'file';
     name: string;
@@ -38,10 +41,15 @@ interface ChatTab {
   input: string;
   pendingFile: File | null;
   pendingFilePreview: string | null;
+  // Mode
+  mode: 'agent' | 'channel' | 'group';
   // Channel mode fields
-  mode: 'agent' | 'channel';
   sessionKey?: string;
   lastPollTimestamp?: string;
+  // Group mode fields
+  groupAgents?: string[];
+  groupStarted?: boolean;
+  autoRound?: boolean;
 }
 
 // ─── LocalStorage Schema ───────────────────────────────────────────────────────
@@ -52,6 +60,8 @@ interface PersistedMessage {
   timestamp: string;
   pinned?: boolean;
   source?: string;
+  agentId?: string;
+  color?: string;
   attachment?: { type: 'image' | 'file'; name: string; preview?: string };
 }
 
@@ -60,8 +70,10 @@ interface PersistedTab {
   agentId: string;
   label: string;
   messages: PersistedMessage[];
-  mode?: 'agent' | 'channel';
+  mode?: 'agent' | 'channel' | 'group';
   sessionKey?: string;
+  groupAgents?: string[];
+  autoRound?: boolean;
 }
 
 const LS_KEY = 'clawdeck-chat-tabs';
@@ -70,6 +82,52 @@ const MAX_TABS = 20;
 const MAX_MESSAGES_PER_TAB = 100;
 const MAX_SPLIT_PANELS = 8;
 const POLL_INTERVAL_MS = 5000;
+
+// ─── Group Chat Colors ────────────────────────────────────────────────────────
+
+const GROUP_COLORS = ['purple', 'green', 'orange', 'pink', 'cyan', 'yellow'] as const;
+type GroupColor = typeof GROUP_COLORS[number];
+
+const GROUP_COLOR_STYLES: Record<GroupColor, {
+  avatar: string;
+  label: string;
+  bubble: string;
+}> = {
+  purple: {
+    avatar: 'bg-purple-500 text-white',
+    label: 'text-purple-600 dark:text-purple-400',
+    bubble: 'bg-purple-50 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800',
+  },
+  green: {
+    avatar: 'bg-green-500 text-white',
+    label: 'text-green-600 dark:text-green-400',
+    bubble: 'bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800',
+  },
+  orange: {
+    avatar: 'bg-orange-500 text-white',
+    label: 'text-orange-600 dark:text-orange-400',
+    bubble: 'bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-800',
+  },
+  pink: {
+    avatar: 'bg-pink-500 text-white',
+    label: 'text-pink-600 dark:text-pink-400',
+    bubble: 'bg-pink-50 dark:bg-pink-950/30 border-pink-200 dark:border-pink-800',
+  },
+  cyan: {
+    avatar: 'bg-cyan-500 text-white',
+    label: 'text-cyan-600 dark:text-cyan-400',
+    bubble: 'bg-cyan-50 dark:bg-cyan-950/30 border-cyan-200 dark:border-cyan-800',
+  },
+  yellow: {
+    avatar: 'bg-yellow-500 text-white',
+    label: 'text-yellow-700 dark:text-yellow-400',
+    bubble: 'bg-yellow-50 dark:bg-yellow-950/30 border-yellow-200 dark:border-yellow-800',
+  },
+};
+
+function getAgentColor(index: number): GroupColor {
+  return GROUP_COLORS[index % GROUP_COLORS.length];
+}
 
 // ─── Quick Commands ───────────────────────────────────────────────────────────
 
@@ -102,6 +160,9 @@ function createTab(agentId: string = ''): ChatTab {
     pendingFile: null,
     pendingFilePreview: null,
     mode: 'agent',
+    groupAgents: [],
+    groupStarted: false,
+    autoRound: false,
   };
 }
 
@@ -146,6 +207,8 @@ function saveTabs(tabs: ChatTab[], activeTabId: string) {
       label: tab.label,
       mode: tab.mode,
       sessionKey: tab.sessionKey,
+      groupAgents: tab.groupAgents,
+      autoRound: tab.autoRound,
       messages: tab.messages.slice(-MAX_MESSAGES_PER_TAB).map((m) => ({
         id: m.id,
         role: m.role,
@@ -153,6 +216,8 @@ function saveTabs(tabs: ChatTab[], activeTabId: string) {
         timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp),
         pinned: m.pinned,
         source: m.source,
+        agentId: m.agentId,
+        color: m.color,
         attachment: m.attachment,
       })),
     }));
@@ -182,6 +247,9 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
       pendingFilePreview: null,
       mode: pt.mode ?? 'agent',
       sessionKey: pt.sessionKey,
+      groupAgents: pt.groupAgents ?? [],
+      groupStarted: false,
+      autoRound: pt.autoRound ?? false,
       messages: (pt.messages ?? []).map((m) => ({
         id: m.id,
         role: m.role,
@@ -189,6 +257,8 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
         timestamp: new Date(m.timestamp),
         pinned: m.pinned ?? false,
         source: m.source,
+        agentId: m.agentId,
+        color: m.color,
         attachment: m.attachment,
       })),
     }));
@@ -351,12 +421,354 @@ function SessionsDropdown({ sessions, onSelect, onClose }: SessionsDropdownProps
   );
 }
 
+// ─── Group Chat Message ───────────────────────────────────────────────────────
+
+interface GroupChatMessageProps {
+  message: Message;
+  agentIndex: number;
+}
+
+function GroupChatMessageBubble({ message, agentIndex }: GroupChatMessageProps) {
+  if (message.role === 'user') {
+    return (
+      <div className="flex justify-end mb-3">
+        <div className="max-w-[75%] bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-2 text-sm">
+          {message.content}
+        </div>
+      </div>
+    );
+  }
+
+  const colorKey = getAgentColor(agentIndex);
+  const styles = GROUP_COLOR_STYLES[colorKey];
+  const agentId = message.agentId || 'Agent';
+  const initials = agentId.slice(0, 2).toUpperCase();
+
+  return (
+    <div className="flex gap-2 mb-3">
+      {/* Avatar */}
+      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${styles.avatar}`}>
+        {initials}
+      </div>
+      <div className="flex-1 min-w-0">
+        {/* Agent label */}
+        <div className={`text-[10px] font-semibold mb-1 ${styles.label}`}>
+          {agentId}
+        </div>
+        {/* Bubble */}
+        <div className={`rounded-2xl rounded-tl-sm px-4 py-2 text-sm border ${styles.bubble} max-w-[85%]`}>
+          {message.content}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Group Chat Panel ─────────────────────────────────────────────────────────
+
+interface GroupChatPanelProps {
+  tab: ChatTab;
+  onUpdateTab: (tabId: string, updater: (tab: ChatTab) => ChatTab) => void;
+  onGroupSend: (tabId: string) => void;
+  onClear: (tabId: string) => void;
+  compact?: boolean;
+}
+
+function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = false }: GroupChatPanelProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [agentInput, setAgentInput] = useState('');
+  const px = compact ? 'px-2' : 'px-3 md:px-6';
+
+  // Build agent index map for color assignment (stable per session)
+  const agentIndexMap = useRef<Map<string, number>>(new Map());
+  const getAgentIndex = (agentId: string) => {
+    if (!agentIndexMap.current.has(agentId)) {
+      const agents = tab.groupAgents || [];
+      const idx = agents.indexOf(agentId);
+      agentIndexMap.current.set(agentId, idx >= 0 ? idx : agentIndexMap.current.size);
+    }
+    return agentIndexMap.current.get(agentId)!;
+  };
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [tab.messages]);
+
+  // Sync agent index map when groupAgents changes
+  useEffect(() => {
+    agentIndexMap.current = new Map();
+    (tab.groupAgents || []).forEach((agentId, idx) => {
+      agentIndexMap.current.set(agentId, idx);
+    });
+  }, [tab.groupAgents]);
+
+  const groupAgents = tab.groupAgents || [];
+  const canStart = groupAgents.length >= 2;
+  const isStarted = tab.groupStarted;
+
+  const handleAddAgent = () => {
+    const trimmed = agentInput.trim();
+    if (!trimmed) return;
+    if (groupAgents.length >= 6) return;
+    if (groupAgents.includes(trimmed)) return;
+    onUpdateTab(tab.id, (t) => ({
+      ...t,
+      groupAgents: [...(t.groupAgents || []), trimmed],
+    }));
+    setAgentInput('');
+  };
+
+  const handleRemoveAgent = (agentId: string) => {
+    onUpdateTab(tab.id, (t) => ({
+      ...t,
+      groupAgents: (t.groupAgents || []).filter((a) => a !== agentId),
+    }));
+  };
+
+  const handleStartGroupChat = () => {
+    if (!canStart) return;
+    onUpdateTab(tab.id, (t) => ({
+      ...t,
+      groupStarted: true,
+      messages: [],
+    }));
+  };
+
+  const handleAutoRoundToggle = () => {
+    onUpdateTab(tab.id, (t) => ({ ...t, autoRound: !t.autoRound }));
+  };
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Group setup panel (when not started) */}
+      {!isStarted ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-6">
+          <Users className="h-12 w-12 text-muted-foreground/40 mb-4" />
+          <h3 className="text-base font-semibold mb-1">Multi-Agent Group Chat</h3>
+          <p className="text-sm text-muted-foreground mb-6 text-center">
+            Add 2–6 agents. They will discuss in sequence, each seeing the others&apos; replies.
+          </p>
+
+          {/* Agent chips */}
+          <div className="w-full max-w-md mb-4">
+            <div className="flex flex-wrap gap-2 min-h-[36px] mb-3">
+              {groupAgents.map((agentId, idx) => {
+                const colorKey = getAgentColor(idx);
+                const styles = GROUP_COLOR_STYLES[colorKey];
+                return (
+                  <span
+                    key={agentId}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${styles.bubble} ${styles.label}`}
+                  >
+                    <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${styles.avatar}`}>
+                      {agentId.slice(0, 1).toUpperCase()}
+                    </span>
+                    {agentId}
+                    <button
+                      onClick={() => handleRemoveAgent(agentId)}
+                      className="ml-0.5 hover:opacity-70"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                );
+              })}
+              {groupAgents.length === 0 && (
+                <span className="text-xs text-muted-foreground italic">No agents added yet</span>
+              )}
+            </div>
+
+            {/* Add agent input */}
+            {groupAgents.length < 6 && (
+              <div className="flex gap-2">
+                <Input
+                  className="flex-1 h-8 text-sm"
+                  placeholder="Agent ID (e.g. main, tonic-ai-tech)"
+                  value={agentInput}
+                  onChange={(e) => setAgentInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddAgent();
+                    }
+                  }}
+                />
+                <Button
+                  size="sm"
+                  className="h-8"
+                  onClick={handleAddAgent}
+                  disabled={!agentInput.trim() || groupAgents.includes(agentInput.trim())}
+                >
+                  Add
+                </Button>
+              </div>
+            )}
+            {groupAgents.length >= 6 && (
+              <p className="text-xs text-muted-foreground">Maximum 6 agents reached</p>
+            )}
+          </div>
+
+          {/* Auto Round toggle */}
+          <div className="flex items-center gap-2 mb-6">
+            <button
+              onClick={handleAutoRoundToggle}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                tab.autoRound ? 'bg-primary' : 'bg-muted-foreground/30'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                  tab.autoRound ? 'translate-x-4.5' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+            <span className="text-sm text-muted-foreground">Auto Round</span>
+            <span className="text-xs text-muted-foreground/60">(agents continue discussing after your message)</span>
+          </div>
+
+          <Button
+            onClick={handleStartGroupChat}
+            disabled={!canStart}
+            className="gap-2"
+          >
+            <Users className="h-4 w-4" />
+            Start Group Chat
+            {!canStart && <span className="text-xs opacity-60">(need ≥2 agents)</span>}
+          </Button>
+        </div>
+      ) : (
+        <>
+          {/* Active group chat */}
+          {/* Group info header */}
+          <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0 flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1 flex-wrap flex-1">
+              {groupAgents.map((agentId, idx) => {
+                const colorKey = getAgentColor(idx);
+                const styles = GROUP_COLOR_STYLES[colorKey];
+                return (
+                  <span
+                    key={agentId}
+                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${styles.avatar}`}
+                  >
+                    {agentId}
+                  </span>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {/* Auto round indicator */}
+              {tab.autoRound && (
+                <span className="flex items-center gap-1 text-[10px] text-primary">
+                  <RefreshCw className="h-3 w-3" />
+                  Auto Round
+                </span>
+              )}
+              {/* Clear */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                onClick={() => onClear(tab.id)}
+                title="Clear conversation"
+                disabled={tab.messages.length === 0}
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
+              {/* Reset group */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground"
+                onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, groupStarted: false, messages: [] }))}
+                title="Change agents"
+              >
+                <Users className="h-3 w-3" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto">
+            <div className={`${px} py-4`}>
+              {tab.messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+                  <Users className="h-8 w-8 mb-2 opacity-40" />
+                  <p className="text-sm">Group chat ready</p>
+                  <p className="text-xs mt-1 opacity-60">
+                    {groupAgents.join(' · ')}
+                  </p>
+                </div>
+              ) : (
+                <div className={`space-y-1 ${compact ? '' : 'max-w-3xl mx-auto'}`}>
+                  {tab.messages.map((msg) => {
+                    const agentIdx = msg.agentId
+                      ? getAgentIndex(msg.agentId)
+                      : 0;
+                    return (
+                      <GroupChatMessageBubble
+                        key={msg.id}
+                        message={msg}
+                        agentIndex={agentIdx}
+                      />
+                    );
+                  })}
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Input */}
+          <div className="border-t p-2 bg-card flex-shrink-0">
+            <form
+              className="flex gap-1.5 items-center"
+              onSubmit={(e) => {
+                e.preventDefault();
+                onGroupSend(tab.id);
+              }}
+            >
+              <Input
+                className="flex-1 h-8 text-sm"
+                placeholder="Message the group..."
+                value={tab.input}
+                onChange={(e) =>
+                  onUpdateTab(tab.id, (t) => ({ ...t, input: e.target.value }))
+                }
+                disabled={tab.streaming}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    onGroupSend(tab.id);
+                  }
+                }}
+              />
+              <Button
+                type="submit"
+                size="icon"
+                className="h-8 w-8 flex-shrink-0"
+                disabled={tab.streaming || !tab.input.trim()}
+              >
+                {tab.streaming ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </form>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── SinglePanel ──────────────────────────────────────────────────────────────
 
 interface SinglePanelProps {
   tab: ChatTab;
   onUpdateTab: (tabId: string, updater: (tab: ChatTab) => ChatTab) => void;
   onSend: (tabId: string) => void;
+  onGroupSend: (tabId: string) => void;
   onClear: (tabId: string) => void;
   onAttachClick: (tabId: string) => void;
   onAddTab: () => void;
@@ -367,6 +779,7 @@ function SinglePanel({
   tab,
   onUpdateTab,
   onSend,
+  onGroupSend,
   onClear,
   onAttachClick,
   onAddTab,
@@ -384,6 +797,7 @@ function SinglePanel({
   const sessionKeyInputRef = useRef<string>(tab.sessionKey || '');
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isChannelMode = tab.mode === 'channel';
+  const isGroupMode = tab.mode === 'group';
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -419,13 +833,10 @@ function SinglePanel({
     stopPolling();
     pollingRef.current = setInterval(async () => {
       try {
-        // We read lastPollTimestamp from the tab by accessing current state
-        // Use a callback approach via the update function
         onUpdateTab(tabId, (t) => {
           const since = t.lastPollTimestamp;
-          // Fire async poll (can't await in updater, so fire and forget)
           void pollMessages(tabId, sessionKey, since);
-          return t; // no immediate change
+          return t;
         });
       } catch {
         // ignore polling errors
@@ -550,6 +961,29 @@ function SinglePanel({
 
   const px = compact ? 'px-2' : 'px-3 md:px-6';
 
+  // If group mode, delegate to GroupChatPanel
+  if (isGroupMode) {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        {/* Mode toggle header */}
+        <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <ModeToggle tab={tab} onUpdateTab={onUpdateTab} />
+          </div>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <GroupChatPanel
+            tab={tab}
+            onUpdateTab={onUpdateTab}
+            onGroupSend={onGroupSend}
+            onClear={onClear}
+            compact={compact}
+          />
+        </div>
+      </div>
+    );
+  }
+
   const handleInputChange = (value: string) => {
     onUpdateTab(tab.id, (t) => ({ ...t, input: value }));
     if (value.startsWith('/')) {
@@ -658,32 +1092,11 @@ function SinglePanel({
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Agent / Channel header */}
+      {/* Agent / Channel / Group header */}
       <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0">
         <div className="flex items-center gap-2">
           {/* Mode toggle */}
-          <div className="flex items-center rounded-md border overflow-hidden flex-shrink-0">
-            <button
-              className={`px-2 py-1 text-[10px] font-medium transition-colors ${
-                !isChannelMode
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'agent' }))}
-            >
-              Agent
-            </button>
-            <button
-              className={`px-2 py-1 text-[10px] font-medium transition-colors ${
-                isChannelMode
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-              onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'channel' }))}
-            >
-              Channel
-            </button>
-          </div>
+          <ModeToggle tab={tab} onUpdateTab={onUpdateTab} />
 
           {!isChannelMode ? (
             /* Agent mode: agent ID input */
@@ -958,6 +1371,50 @@ function SinglePanel({
   );
 }
 
+// ─── Mode Toggle (shared) ─────────────────────────────────────────────────────
+
+interface ModeToggleProps {
+  tab: ChatTab;
+  onUpdateTab: (tabId: string, updater: (tab: ChatTab) => ChatTab) => void;
+}
+
+function ModeToggle({ tab, onUpdateTab }: ModeToggleProps) {
+  return (
+    <div className="flex items-center rounded-md border overflow-hidden flex-shrink-0">
+      <button
+        className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+          tab.mode === 'agent'
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:text-foreground'
+        }`}
+        onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'agent' }))}
+      >
+        Agent
+      </button>
+      <button
+        className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+          tab.mode === 'channel'
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:text-foreground'
+        }`}
+        onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'channel' }))}
+      >
+        Channel
+      </button>
+      <button
+        className={`px-2 py-1 text-[10px] font-medium transition-colors ${
+          tab.mode === 'group'
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:text-foreground'
+        }`}
+        onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, mode: 'group' }))}
+      >
+        Group
+      </button>
+    </div>
+  );
+}
+
 // ─── Inline Tab Label Edit ────────────────────────────────────────────────────
 
 interface InlineTabLabelProps {
@@ -1133,7 +1590,133 @@ export default function ChatPage() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [activeTab, updateTab]);
 
-  // ── Send message ────────────────────────────────────────────────────────────
+  // ── Group Chat Send ─────────────────────────────────────────────────────────
+
+  const sendGroupMessage = useCallback(async (tabId: string) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab || !tab.input.trim() || tab.streaming) return;
+    if (!tab.groupAgents || tab.groupAgents.length < 2) return;
+
+    const userContent = tab.input.trim();
+    const isFirstMessage = tab.messages.length === 0;
+
+    const userMsg: Message = {
+      id: `msg-${Date.now()}-user`,
+      role: 'user',
+      content: userContent,
+      timestamp: new Date(),
+    };
+
+    const newLabel = isFirstMessage ? autoLabel(userContent) : undefined;
+
+    updateTab(tabId, (t) => ({
+      ...t,
+      messages: [...t.messages, userMsg],
+      input: '',
+      streaming: true,
+      ...(newLabel ? { label: newLabel } : {}),
+    }));
+
+    const sendRound = async (prompt: string, currentHistory: Message[]) => {
+      const historyPayload = currentHistory.map((m) => ({
+        role: m.role,
+        content: m.content,
+        agentId: m.agentId,
+      }));
+
+      const res = await fetch('/api/groupchat/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          agents: tab.groupAgents,
+          message: prompt,
+          history: historyPayload,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        throw new Error('Group chat request failed');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() || '';
+
+        for (const chunk of lines) {
+          const line = chunk.trim();
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6).trim();
+          try {
+            const event = JSON.parse(jsonStr) as {
+              agentId?: string;
+              content?: string;
+              done?: boolean;
+            };
+            if (event.done) continue;
+            if (event.agentId && event.content !== undefined) {
+              const agentIdx = (tab.groupAgents || []).indexOf(event.agentId);
+              const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
+              const agentMsg: Message = {
+                id: `msg-${Date.now()}-${event.agentId}-${Math.random()}`,
+                role: 'assistant',
+                content: event.content,
+                timestamp: new Date(),
+                agentId: event.agentId,
+                color,
+              };
+              updateTab(tabId, (t) => ({
+                ...t,
+                messages: [...t.messages, agentMsg],
+              }));
+            }
+          } catch {
+            // skip malformed
+          }
+        }
+      }
+    };
+
+    try {
+      // Get current messages (before user message added) as history
+      const currentTab = tabs.find((t) => t.id === tabId);
+      const history = currentTab ? [...currentTab.messages] : [];
+
+      // First round: respond to user message
+      await sendRound(userContent, history);
+
+      // Auto Round: agents discuss among themselves
+      if (tab.autoRound) {
+        const updatedTab = tabs.find((t) => t.id === tabId);
+        const allMessages = updatedTab ? updatedTab.messages : [];
+        await sendRound('[Continue the discussion]', allMessages);
+      }
+    } catch (err) {
+      console.error('Group chat error:', err);
+      const errMsg: Message = {
+        id: `msg-${Date.now()}-err`,
+        role: 'assistant',
+        content: 'Group chat error. Please try again.',
+        timestamp: new Date(),
+      };
+      updateTab(tabId, (t) => ({
+        ...t,
+        messages: [...t.messages, errMsg],
+      }));
+    } finally {
+      updateTab(tabId, (t) => ({ ...t, streaming: false }));
+    }
+  }, [tabs, updateTab]);
+
+  // ── Send message (agent/channel) ────────────────────────────────────────────
 
   const sendMessage = useCallback(async (tabId: string) => {
     const tab = tabs.find((t) => t.id === tabId);
@@ -1362,6 +1945,8 @@ export default function ChatPage() {
                   >
                     {tab.mode === 'channel' ? (
                       <Radio className="h-3 w-3 mr-1.5 flex-shrink-0 text-blue-500" />
+                    ) : tab.mode === 'group' ? (
+                      <Users className="h-3 w-3 mr-1.5 flex-shrink-0 text-purple-500" />
                     ) : (
                       <Bot className="h-3 w-3 mr-1.5 flex-shrink-0" />
                     )}
@@ -1400,6 +1985,8 @@ export default function ChatPage() {
               >
                 {tab.mode === 'channel' ? (
                   <Radio className="h-3 w-3 text-blue-500" />
+                ) : tab.mode === 'group' ? (
+                  <Users className="h-3 w-3 text-purple-500" />
                 ) : (
                   <Bot className="h-3 w-3" />
                 )}
@@ -1443,6 +2030,7 @@ export default function ChatPage() {
             onClick={() => setSplitView((v) => !v)}
             title={splitView ? 'Switch to tab mode' : 'Switch to split view (up to 8 panels)'}
           >
+
             {splitView ? <Rows3 className="h-4 w-4" /> : <LayoutTemplate className="h-4 w-4" />}
           </Button>
         </div>
@@ -1457,6 +2045,8 @@ export default function ChatPage() {
               <div className="px-2 py-1 border-b bg-card/80 flex items-center gap-1.5 flex-shrink-0">
                 {tab.mode === 'channel' ? (
                   <Radio className="h-3 w-3 text-blue-500 flex-shrink-0" />
+                ) : tab.mode === 'group' ? (
+                  <Users className="h-3 w-3 text-purple-500 flex-shrink-0" />
                 ) : (
                   <Bot className="h-3 w-3 text-muted-foreground flex-shrink-0" />
                 )}
@@ -1472,11 +2062,18 @@ export default function ChatPage() {
                     Live
                   </span>
                 )}
+                {tab.mode === 'group' && tab.groupStarted && (
+                  <span className="flex items-center gap-0.5 text-[9px] text-purple-500">
+                    <span className="w-1 h-1 rounded-full bg-purple-500 animate-pulse" />
+                    Group
+                  </span>
+                )}
               </div>
               <SinglePanel
                 tab={tab}
                 onUpdateTab={updateTab}
                 onSend={sendMessage}
+                onGroupSend={sendGroupMessage}
                 onClear={clearMessages}
                 onAttachClick={handleAttachClick}
                 onAddTab={addTab}
@@ -1497,6 +2094,8 @@ export default function ChatPage() {
               <div className="px-4 py-2 border-b bg-card/50 flex items-center gap-2 flex-shrink-0">
                 {tab.mode === 'channel' ? (
                   <Radio className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                ) : tab.mode === 'group' ? (
+                  <Users className="h-4 w-4 text-purple-500 flex-shrink-0" />
                 ) : (
                   <Bot className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                 )}
@@ -1512,6 +2111,11 @@ export default function ChatPage() {
                       {tab.sessionKey}
                     </span>
                   )}
+                  {tab.mode === 'group' && tab.groupAgents && tab.groupAgents.length > 0 && (
+                    <span className="text-[10px] text-purple-500 font-mono leading-tight truncate">
+                      {tab.groupAgents.join(' · ')}
+                    </span>
+                  )}
                 </div>
                 {tab.streaming && (
                   <span className="flex items-center gap-1 text-[10px] text-green-500">
@@ -1525,12 +2129,19 @@ export default function ChatPage() {
                     Live
                   </span>
                 )}
+                {tab.mode === 'group' && tab.groupStarted && (
+                  <span className="flex items-center gap-1 text-[10px] text-purple-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                    Group
+                  </span>
+                )}
               </div>
 
               <SinglePanel
                 tab={tab}
                 onUpdateTab={updateTab}
                 onSend={sendMessage}
+                onGroupSend={sendGroupMessage}
                 onClear={clearMessages}
                 onAttachClick={handleAttachClick}
                 onAddTab={addTab}
