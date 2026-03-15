@@ -223,7 +223,35 @@ router.get('/', async (_req: Request, res: Response) => {
       return tb - ta; // descending: most recently active first
     });
 
-    res.json({ sessions: normalized });
+    // Enrich sessions with file size from .jsonl files
+    const { homedir } = await import('os');
+    const { join } = await import('path');
+    const { stat: fsStat, readdir: fsReaddir } = await import('fs/promises');
+
+    const enriched = await Promise.all(normalized.map(async (s) => {
+      try {
+        const parts2 = s.key.split(':');
+        const agentId2 = parts2[1];
+        if (!agentId2) return { ...s, sizeBytes: undefined };
+
+        const sessionsDir2 = join(homedir(), '.openclaw', 'agents', agentId2, 'sessions');
+        const files2 = await fsReaddir(sessionsDir2).catch(() => [] as string[]);
+
+        const keySlug2 = s.key.replace(/[^a-zA-Z0-9]/g, '_');
+        for (const file2 of files2) {
+          const fileSlug2 = file2.replace(/\.jsonl$/, '').replace(/[^a-zA-Z0-9]/g, '_');
+          if (fileSlug2 === keySlug2 || file2 === `${s.key}.jsonl`) {
+            const info2 = await fsStat(join(sessionsDir2, file2)).catch(() => null);
+            if (info2) return { ...s, sizeBytes: info2.size };
+          }
+        }
+        return { ...s, sizeBytes: undefined };
+      } catch {
+        return { ...s, sizeBytes: undefined };
+      }
+    }));
+
+    res.json({ sessions: enriched });
   } catch (err) {
     console.error('Failed to list sessions:', err);
     res.status(502).json({ error: 'Failed to reach gateway', detail: String(err) });
@@ -324,6 +352,45 @@ router.get('/:key(*)/poll', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('Failed to poll session:', err);
     res.status(502).json({ error: 'Failed to reach gateway', detail: String(err) });
+  }
+});
+
+// DELETE /api/sessions/:key - delete a session (remove its .jsonl file)
+router.delete('/:key(*)', async (req: Request, res: Response) => {
+  const key = req.params.key;
+
+  if (!key || !key.startsWith('agent:')) {
+    res.status(400).json({ error: 'Invalid session key' });
+    return;
+  }
+
+  try {
+    const { homedir } = await import('os');
+    const { join } = await import('path');
+    const { unlink, readdir } = await import('fs/promises');
+
+    const parts = key.split(':');
+    const agentId = parts[1];
+
+    const sessionsDir = join(homedir(), '.openclaw', 'agents', agentId, 'sessions');
+
+    let deleted = false;
+    const files = await readdir(sessionsDir).catch(() => [] as string[]);
+
+    const keySlug = key.replace(/[^a-zA-Z0-9]/g, '_');
+    for (const file of files) {
+      const fileSlug = file.replace(/\.jsonl$/, '').replace(/[^a-zA-Z0-9]/g, '_');
+      if (fileSlug === keySlug || file === `${key}.jsonl`) {
+        await unlink(join(sessionsDir, file));
+        deleted = true;
+        break;
+      }
+    }
+
+    res.json({ ok: true, deleted, message: deleted ? `Session ${key} deleted` : `Session ${key} not found on disk (may be in-memory only)` });
+  } catch (err) {
+    console.error('Failed to delete session:', err);
+    res.status(500).json({ error: 'Failed to delete session', detail: String(err) });
   }
 });
 
