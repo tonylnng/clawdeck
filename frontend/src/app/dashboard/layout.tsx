@@ -26,6 +26,7 @@ import {
   Bell,
   Package,
   Database,
+  Globe,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -35,6 +36,7 @@ const NAV_ITEMS = [
   { href: '/dashboard/logs',          icon: FileText,      label: '📋 Logs',          shortcut: 'g+l' },
   { href: '/dashboard/monitor',       icon: Radio,         label: '📡 Monitor',       shortcut: 'g+o' },
   { href: '/dashboard/sessions',      icon: Database,      label: '🗂️ Sessions',      shortcut: 'g+e' },
+  { href: '/dashboard/instances',     icon: Globe,         label: '🌐 Instances',     shortcut: 'g+f' },
   { href: '/dashboard/notifications', icon: Bell,          label: '🔔 Notifications', shortcut: 'g+b' },
   { href: '/dashboard/analytics',     icon: BarChart2,     label: '📊 Analytics',     shortcut: 'g+n' },
   { href: '/dashboard/playground',    icon: FlaskConical,  label: '🧪 Playground',    shortcut: 'g+p' },
@@ -110,7 +112,7 @@ export default function DashboardLayout({
         <Image src="/logo.png" alt="ClawDeck" width={28} height={28} />
         <div>
           <span className="font-bold text-lg leading-none">ClawDeck</span>
-          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v1.9.1</span>
+          <span className="block text-[10px] text-muted-foreground font-mono leading-none mt-0.5">v2.0.0</span>
         </div>
       </div>
 

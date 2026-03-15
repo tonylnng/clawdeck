@@ -19,6 +19,7 @@ import sessionsRouter from './routes/sessions';
 import groupChatRouter from './routes/groupchat';
 import skillsRouter from './routes/skills';
 import notificationsRouter from './routes/notifications';
+import instancesRouter from './routes/instances';
 import { redactMiddleware } from './middleware/redact';
 
 dotenv.config();
@@ -74,6 +75,7 @@ app.use('/api/sessions', sessionsRouter);
 app.use('/api/groupchat', groupChatRouter);
 app.use('/api/skills', skillsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/instances', instancesRouter);
 
 // Health check
 app.get('/health', (_req, res) => {
