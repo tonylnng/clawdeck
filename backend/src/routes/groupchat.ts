@@ -1,43 +1,96 @@
 import { Router, Request, Response } from 'express';
 import fetch from 'node-fetch';
 import { requireAuth } from '../middleware/auth';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 const router = Router();
 router.use(requireAuth);
 
-const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
-const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
-const AGENT_TIMEOUT_MS = 60000; // 60s per agent (some models are slow)
+const LOCAL_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'http://127.0.0.1:18789';
+const LOCAL_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
+const AGENT_TIMEOUT_MS = 60000;
+const INSTANCES_FILE = path.join(os.homedir(), '.openclaw', 'clawdeck-instances.json');
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface AgentRef {
+  agentId: string;       // e.g. "main", "tonic-ai-tech"
+  instanceId?: string;   // undefined or "local" = local gateway, else remote instance ID
+  displayName?: string;  // optional override label
+}
+
+interface InstanceConfig {
+  id: string;
+  name: string;
+  url: string;
+  token: string;
+  color: string;
+}
 
 interface HistoryMessage {
   role: string;
   content: string;
   agentId?: string;
+  instanceId?: string;
 }
 
 interface ChatCompletionResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
+  choices?: Array<{ message?: { content?: string } }>;
 }
 
-// POST /api/groupchat/send
-// Body: { agents: string[], message: string, history: HistoryMessage[], model?: string }
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function readInstances(): Promise<InstanceConfig[]> {
+  try {
+    const data = await fs.readFile(INSTANCES_FILE, 'utf-8');
+    const parsed = JSON.parse(data) as { instances?: InstanceConfig[] };
+    return parsed.instances ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function getGatewayConfig(instanceId: string | undefined, instances: InstanceConfig[]): { url: string; token: string } {
+  if (!instanceId || instanceId === 'local') {
+    return { url: LOCAL_GATEWAY_URL, token: LOCAL_GATEWAY_TOKEN };
+  }
+  const inst = instances.find((i) => i.id === instanceId);
+  if (!inst) {
+    return { url: LOCAL_GATEWAY_URL, token: LOCAL_GATEWAY_TOKEN };
+  }
+  return { url: inst.url, token: inst.token };
+}
+
+function normalizeAgentSessionKey(agentId: string): string {
+  if (agentId.startsWith('agent:')) return agentId;
+  return `agent:${agentId}:main`;
+}
+
+// ── POST /api/groupchat/send ──────────────────────────────────────────────────
+// Body: {
+//   agents: AgentRef[],          // NEW: array of {agentId, instanceId?, displayName?}
+//   message: string,
+//   history: HistoryMessage[],
+//   model?: string
+// }
+//
+// Legacy support: agents can also be string[] (old format, all local)
+
 router.post('/send', async (req: Request, res: Response) => {
-  const { agents, message, history = [], model } = req.body as {
-    agents: string[];
+  const { agents: rawAgents, message, history = [], model } = req.body as {
+    agents: (AgentRef | string)[];
     message: string;
     history: HistoryMessage[];
     model?: string;
   };
 
-  if (!agents || !Array.isArray(agents) || agents.length < 2) {
+  if (!rawAgents || !Array.isArray(rawAgents) || rawAgents.length < 2) {
     res.status(400).json({ error: 'At least 2 agents required' });
     return;
   }
-  if (agents.length > 6) {
+  if (rawAgents.length > 6) {
     res.status(400).json({ error: 'Maximum 6 agents allowed' });
     return;
   }
@@ -46,12 +99,15 @@ router.post('/send', async (req: Request, res: Response) => {
     return;
   }
 
-  // Normalize agent IDs to full session key format:
-  // "main" -> "agent:main:main", "agent:main:main" stays as-is
-  const normalizedAgents = agents.map((a) => {
-    if (a.startsWith('agent:')) return a;
-    return `agent:${a}:main`;
-  });
+  // Normalize agents (support legacy string[] format)
+  const agents: AgentRef[] = rawAgents.map((a) =>
+    typeof a === 'string'
+      ? { agentId: a, instanceId: 'local' }
+      : { agentId: a.agentId, instanceId: a.instanceId || 'local', displayName: a.displayName }
+  );
+
+  // Load instances config
+  const instances = await readInstances();
 
   // Set up SSE
   res.setHeader('Content-Type', 'text/event-stream');
@@ -64,60 +120,70 @@ router.post('/send', async (req: Request, res: Response) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  // Build conversation history from prior chat (excluding group agent messages context)
-  // Prior history messages go in as-is for context
+  // Build display labels for each agent
+  const getDisplayLabel = (agent: AgentRef): string => {
+    if (agent.displayName) return agent.displayName;
+    if (!agent.instanceId || agent.instanceId === 'local') return agent.agentId;
+    const inst = instances.find((i) => i.id === agent.instanceId);
+    return inst ? `${agent.agentId}@${inst.name}` : `${agent.agentId}@${agent.instanceId}`;
+  };
+
+  // Build base history
   const baseHistoryMessages = history.map((m) => ({
     role: m.role as 'user' | 'assistant',
     content: m.agentId ? `[${m.agentId}]: ${m.content}` : m.content,
   }));
-
-  // Add the current user message
   baseHistoryMessages.push({ role: 'user', content: message });
 
-  // Collect replies from each agent in order
-  const agentReplies: Array<{ agentId: string; content: string }> = [];
+  // Sequential agent calls
+  const agentReplies: Array<{ displayLabel: string; content: string }> = [];
 
-  for (let i = 0; i < normalizedAgents.length; i++) {
-    const agentId = normalizedAgents[i];
-    const displayId = agents[i]; // original user-facing name for SSE events
-    const otherAgents = agents.filter((_, j) => j !== i).join(', ');
+  for (let i = 0; i < agents.length; i++) {
+    const agent = agents[i];
+    const displayLabel = getDisplayLabel(agent);
+    const { url: gatewayUrl, token: gatewayToken } = getGatewayConfig(agent.instanceId, instances);
+    const sessionKey = normalizeAgentSessionKey(agent.agentId);
 
-    // Signal to frontend that this agent is thinking
-    sendEvent({ agentId: displayId, thinking: true, done: false });
+    const otherLabels = agents
+      .filter((_, j) => j !== i)
+      .map((a) => getDisplayLabel(a))
+      .join(', ');
+
+    // Signal thinking
+    sendEvent({ agentId: displayLabel, instanceId: agent.instanceId || 'local', thinking: true, done: false });
 
     const systemMessage = {
       role: 'system' as const,
-      content: `You are ${agentId} participating in a group discussion. Other participants: ${otherAgents}. Respond naturally as your character. Keep responses concise (2-3 sentences max).`,
+      content: `You are ${displayLabel} participating in a group discussion. Other participants: ${otherLabels}. Respond naturally and concisely (2-3 sentences max).`,
     };
 
-    // Build messages: system + history + user msg + previous agent replies
     const messages = [
       systemMessage,
       ...baseHistoryMessages,
       ...agentReplies.map((r) => ({
         role: 'assistant' as const,
-        content: `[${r.agentId}]: ${r.content}`,
+        content: `[${r.displayLabel}]: ${r.content}`,
       })),
     ];
+
+    let content = '';
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS);
 
-      let content = '';
-
       try {
-        const upstream = await fetch(`${GATEWAY_URL}/v1/chat/completions`, {
+        const upstream = await fetch(`${gatewayUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+            'Authorization': `Bearer ${gatewayToken}`,
           },
           body: JSON.stringify({
             model: model || 'default',
             stream: false,
             messages,
-            session: agentId,
+            session: sessionKey,
           }),
           signal: controller.signal,
         });
@@ -126,8 +192,8 @@ router.post('/send', async (req: Request, res: Response) => {
 
         if (!upstream.ok) {
           const errText = await upstream.text();
-          console.error(`Group chat: agent ${agentId} error ${upstream.status}: ${errText}`);
-          content = `[Error: ${upstream.status}]`;
+          console.error(`Group chat: agent ${displayLabel} error ${upstream.status}: ${errText}`);
+          content = `[Error ${upstream.status}: ${upstream.statusText}]`;
         } else {
           const data = await upstream.json() as ChatCompletionResponse;
           content = data?.choices?.[0]?.message?.content || '[No response]';
@@ -135,26 +201,29 @@ router.post('/send', async (req: Request, res: Response) => {
       } catch (fetchErr) {
         clearTimeout(timeoutId);
         const errName = (fetchErr as Error)?.name;
-        if (errName === 'AbortError') {
-          content = '[Timeout after 30s]';
-        } else {
-          console.error(`Group chat: agent ${agentId} fetch error:`, fetchErr);
-          content = '[Connection error]';
-        }
+        content = errName === 'AbortError' ? '[Timeout after 60s]' : `[Connection error: ${(fetchErr as Error).message}]`;
       }
-
-      agentReplies.push({ agentId: displayId, content });
-      sendEvent({ agentId: displayId, content, done: false });
-
     } catch (err) {
-      console.error(`Group chat: unexpected error for agent ${agentId}:`, err);
-      agentReplies.push({ agentId: displayId, content: '[Error]' });
-      sendEvent({ agentId: displayId, content: '[Error]', done: false });
+      content = `[Error: ${(err as Error).message}]`;
     }
+
+    agentReplies.push({ displayLabel, content });
+    sendEvent({ agentId: displayLabel, instanceId: agent.instanceId || 'local', content, done: false });
   }
 
   sendEvent({ done: true });
   res.end();
+});
+
+// GET /api/groupchat/instances — list available instances for agent selection
+router.get('/instances', async (_req: Request, res: Response) => {
+  const instances = await readInstances();
+  res.json({
+    instances: [
+      { id: 'local', name: 'Local (this machine)', color: '#6366f1' },
+      ...instances.map(({ id, name, color }) => ({ id, name, color })),
+    ],
+  });
 });
 
 export default router;

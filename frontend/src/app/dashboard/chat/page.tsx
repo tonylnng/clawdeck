@@ -47,7 +47,7 @@ interface ChatTab {
   sessionKey?: string;
   lastPollTimestamp?: string;
   // Group mode fields
-  groupAgents?: string[];
+  groupAgents?: GroupAgentRef[];
   groupStarted?: boolean;
   autoRound?: boolean;
   // Tab pinning
@@ -74,7 +74,7 @@ interface PersistedTab {
   messages: PersistedMessage[];
   mode?: 'agent' | 'channel' | 'group';
   sessionKey?: string;
-  groupAgents?: string[];
+  groupAgents?: GroupAgentRef[];
   autoRound?: boolean;
   tabPinned?: boolean;
 }
@@ -87,6 +87,20 @@ const MAX_SPLIT_PANELS = 8;
 const POLL_INTERVAL_MS = 5000;
 
 // ─── Group Chat Colors ────────────────────────────────────────────────────────
+
+// ─── Group Agent Ref ──────────────────────────────────────────────────────────
+
+interface GroupAgentRef {
+  agentId: string;
+  instanceId: string;  // 'local' or remote instance id
+  displayName?: string;
+}
+
+interface InstanceOption {
+  id: string;
+  name: string;
+  color: string;
+}
 
 const GROUP_COLORS = ['purple', 'green', 'orange', 'pink', 'cyan', 'yellow'] as const;
 type GroupColor = typeof GROUP_COLORS[number];
@@ -163,7 +177,7 @@ function createTab(agentId: string = ''): ChatTab {
     pendingFile: null,
     pendingFilePreview: null,
     mode: 'agent',
-    groupAgents: [],
+    groupAgents: [] as GroupAgentRef[],
     groupStarted: false,
     autoRound: false,
   };
@@ -251,7 +265,7 @@ function loadTabs(): { tabs: ChatTab[]; activeTabId: string } | null {
       pendingFilePreview: null,
       mode: pt.mode ?? 'agent',
       sessionKey: pt.sessionKey,
-      groupAgents: pt.groupAgents ?? [],
+      groupAgents: (pt.groupAgents ?? []) as GroupAgentRef[],
       groupStarted: false,
       autoRound: pt.autoRound ?? false,
       tabPinned: pt.tabPinned ?? false,
@@ -507,14 +521,26 @@ interface GroupChatPanelProps {
 function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = false }: GroupChatPanelProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [agentInput, setAgentInput] = useState('');
+  const [selectedInstanceId, setSelectedInstanceId] = useState('local');
+  const [instances, setInstances] = useState<InstanceOption[]>([{ id: 'local', name: 'Local (this machine)', color: '#6366f1' }]);
   const px = compact ? 'px-2' : 'px-3 md:px-6';
+
+  // Load available instances on mount
+  useEffect(() => {
+    fetch('/api/groupchat/instances', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((d: { instances?: InstanceOption[] }) => {
+        if (d.instances) setInstances(d.instances);
+      })
+      .catch(() => {});
+  }, []);
 
   // Build agent index map for color assignment (stable per session)
   const agentIndexMap = useRef<Map<string, number>>(new Map());
   const getAgentIndex = (agentId: string) => {
     if (!agentIndexMap.current.has(agentId)) {
       const agents = tab.groupAgents || [];
-      const idx = agents.indexOf(agentId);
+      const idx = agents.findIndex((a) => a.agentId === agentId || `${a.agentId}@${a.instanceId}` === agentId);
       agentIndexMap.current.set(agentId, idx >= 0 ? idx : agentIndexMap.current.size);
     }
     return agentIndexMap.current.get(agentId)!;
@@ -524,34 +550,51 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [tab.messages]);
 
-  // Sync agent index map when groupAgents changes
   useEffect(() => {
     agentIndexMap.current = new Map();
-    (tab.groupAgents || []).forEach((agentId, idx) => {
-      agentIndexMap.current.set(agentId, idx);
+    (tab.groupAgents || []).forEach((agent, idx) => {
+      const key = getAgentDisplayLabel(agent, instances);
+      agentIndexMap.current.set(key, idx);
     });
-  }, [tab.groupAgents]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.groupAgents, instances]);
 
   const groupAgents = tab.groupAgents ?? [];
   const canStart = groupAgents.length >= 2;
   const isStarted = tab.groupStarted && groupAgents.length >= 2;
 
+  const getAgentDisplayLabel = (agent: GroupAgentRef, instanceList: InstanceOption[]): string => {
+    if (agent.displayName) return agent.displayName;
+    if (!agent.instanceId || agent.instanceId === 'local') return agent.agentId;
+    const inst = instanceList.find((i) => i.id === agent.instanceId);
+    return inst ? `${agent.agentId}@${inst.name}` : `${agent.agentId}@${agent.instanceId}`;
+  };
+
   const handleAddAgent = () => {
     const trimmed = agentInput.trim();
     if (!trimmed) return;
     if (groupAgents.length >= 6) return;
-    if (groupAgents.includes(trimmed)) return;
+    const isDuplicate = groupAgents.some(
+      (a) => a.agentId === trimmed && a.instanceId === selectedInstanceId
+    );
+    if (isDuplicate) return;
+
+    const newAgent: GroupAgentRef = {
+      agentId: trimmed,
+      instanceId: selectedInstanceId,
+    };
+
     onUpdateTab(tab.id, (t) => ({
       ...t,
-      groupAgents: [...(t.groupAgents || []), trimmed],
+      groupAgents: [...(t.groupAgents || []), newAgent],
     }));
     setAgentInput('');
   };
 
-  const handleRemoveAgent = (agentId: string) => {
+  const handleRemoveAgent = (idx: number) => {
     onUpdateTab(tab.id, (t) => ({
       ...t,
-      groupAgents: (t.groupAgents || []).filter((a) => a !== agentId),
+      groupAgents: (t.groupAgents || []).filter((_, i) => i !== idx),
     }));
   };
 
@@ -570,34 +613,39 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Group setup panel (when not started) */}
       {!isStarted ? (
         <div className="flex-1 flex flex-col items-center justify-center p-6">
           <Users className="h-12 w-12 text-muted-foreground/40 mb-4" />
           <h3 className="text-base font-semibold mb-1">Multi-Agent Group Chat</h3>
           <p className="text-sm text-muted-foreground mb-6 text-center">
-            Add 2–6 agents. They will discuss in sequence, each seeing the others&apos; replies.
+            Add 2–6 agents from any OpenClaw instance. They discuss in sequence, each seeing others&apos; replies.
           </p>
 
           {/* Agent chips */}
           <div className="w-full max-w-md mb-4">
             <div className="flex flex-wrap gap-2 min-h-[36px] mb-3">
-              {groupAgents.map((agentId, idx) => {
+              {groupAgents.map((agent, idx) => {
                 const colorKey = getAgentColor(idx);
                 const styles = GROUP_COLOR_STYLES[colorKey];
+                const label = getAgentDisplayLabel(agent, instances);
+                const inst = instances.find((i) => i.id === agent.instanceId);
                 return (
                   <span
-                    key={agentId}
+                    key={idx}
                     className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium border ${styles.bubble} ${styles.label}`}
                   >
+                    {inst && inst.id !== 'local' && (
+                      <span
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ background: inst.color }}
+                        title={inst.name}
+                      />
+                    )}
                     <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${styles.avatar}`}>
-                      {agentId.slice(0, 1).toUpperCase()}
+                      {agent.agentId.slice(0, 1).toUpperCase()}
                     </span>
-                    {agentId}
-                    <button
-                      onClick={() => handleRemoveAgent(agentId)}
-                      className="ml-0.5 hover:opacity-70"
-                    >
+                    {label}
+                    <button onClick={() => handleRemoveAgent(idx)} className="ml-0.5 hover:opacity-70">
                       <X className="h-3 w-3" />
                     </button>
                   </span>
@@ -608,29 +656,42 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
               )}
             </div>
 
-            {/* Add agent input */}
+            {/* Add agent: Instance + Agent ID */}
             {groupAgents.length < 6 && (
-              <div className="flex gap-2">
-                <Input
-                  className="flex-1 h-8 text-sm"
-                  placeholder="Agent ID (e.g. main, tonic-ai-tech)"
-                  value={agentInput}
-                  onChange={(e) => setAgentInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAddAgent();
-                    }
-                  }}
-                />
-                <Button
-                  size="sm"
-                  className="h-8"
-                  onClick={handleAddAgent}
-                  disabled={!agentInput.trim() || groupAgents.includes(agentInput.trim())}
-                >
-                  Add
-                </Button>
+              <div className="space-y-2">
+                {/* Instance selector */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">Instance:</span>
+                  <select
+                    value={selectedInstanceId}
+                    onChange={(e) => setSelectedInstanceId(e.target.value)}
+                    className="flex-1 h-8 text-xs rounded-md border border-input bg-background px-2 text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    {instances.map((inst) => (
+                      <option key={inst.id} value={inst.id}>{inst.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {/* Agent ID input */}
+                <div className="flex gap-2">
+                  <Input
+                    className="flex-1 h-8 text-sm"
+                    placeholder="Agent ID (e.g. main, tonic-ai-tech)"
+                    value={agentInput}
+                    onChange={(e) => setAgentInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); handleAddAgent(); }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    className="h-8"
+                    onClick={handleAddAgent}
+                    disabled={!agentInput.trim()}
+                  >
+                    Add
+                  </Button>
+                </div>
               </div>
             )}
             {groupAgents.length >= 6 && (
@@ -646,21 +707,12 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
                 tab.autoRound ? 'bg-primary' : 'bg-muted-foreground/30'
               }`}
             >
-              <span
-                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                  tab.autoRound ? 'translate-x-4.5' : 'translate-x-0.5'
-                }`}
-              />
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${tab.autoRound ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
             </button>
             <span className="text-sm text-muted-foreground">Auto Round</span>
-            <span className="text-xs text-muted-foreground/60">(agents continue discussing after your message)</span>
           </div>
 
-          <Button
-            onClick={handleStartGroupChat}
-            disabled={!canStart}
-            className="gap-2"
-          >
+          <Button onClick={handleStartGroupChat} disabled={!canStart} className="gap-2">
             <Users className="h-4 w-4" />
             Start Group Chat
             {!canStart && <span className="text-xs opacity-60">(need ≥2 agents)</span>}
@@ -668,50 +720,32 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
         </div>
       ) : (
         <>
-          {/* Active group chat */}
-          {/* Group info header */}
+          {/* Active group chat header */}
           <div className="px-3 py-1.5 border-b bg-muted/30 flex-shrink-0 flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-1 flex-wrap flex-1">
-              {groupAgents.map((agentId, idx) => {
+              {groupAgents.map((agent, idx) => {
                 const colorKey = getAgentColor(idx);
                 const styles = GROUP_COLOR_STYLES[colorKey];
+                const inst = instances.find((i) => i.id === agent.instanceId);
+                const label = getAgentDisplayLabel(agent, instances);
                 return (
-                  <span
-                    key={agentId}
-                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${styles.avatar}`}
-                  >
-                    {agentId}
+                  <span key={idx} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${styles.avatar}`} title={inst?.name}>
+                    {inst && inst.id !== 'local' && <span className="w-1.5 h-1.5 rounded-full bg-white/60" />}
+                    {label}
                   </span>
                 );
               })}
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              {/* Auto round indicator */}
               {tab.autoRound && (
                 <span className="flex items-center gap-1 text-[10px] text-primary">
-                  <RefreshCw className="h-3 w-3" />
-                  Auto Round
+                  <RefreshCw className="h-3 w-3" />Auto Round
                 </span>
               )}
-              {/* Clear */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                onClick={() => onClear(tab.id)}
-                title="Clear conversation"
-                disabled={tab.messages.length === 0}
-              >
+              <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={() => onClear(tab.id)} title="Clear" disabled={tab.messages.length === 0}>
                 <Trash2 className="h-3 w-3" />
               </Button>
-              {/* Reset group */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-muted-foreground"
-                onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, groupStarted: false, messages: [] }))}
-                title="Change agents"
-              >
+              <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground" onClick={() => onUpdateTab(tab.id, (t) => ({ ...t, groupStarted: false, messages: [] }))} title="Change agents">
                 <Users className="h-3 w-3" />
               </Button>
             </div>
@@ -724,23 +758,13 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
                 <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
                   <Users className="h-8 w-8 mb-2 opacity-40" />
                   <p className="text-sm">Group chat ready</p>
-                  <p className="text-xs mt-1 opacity-60">
-                    {groupAgents.join(' · ')}
-                  </p>
+                  <p className="text-xs mt-1 opacity-60">{groupAgents.map((a) => getAgentDisplayLabel(a, instances)).join(' · ')}</p>
                 </div>
               ) : (
                 <div className={`space-y-1 ${compact ? '' : 'max-w-3xl mx-auto'}`}>
                   {tab.messages.map((msg) => {
-                    const agentIdx = msg.agentId
-                      ? getAgentIndex(msg.agentId)
-                      : 0;
-                    return (
-                      <GroupChatMessageBubble
-                        key={msg.id}
-                        message={msg}
-                        agentIndex={agentIdx}
-                      />
-                    );
+                    const agentIdx = msg.agentId ? getAgentIndex(msg.agentId) : 0;
+                    return <GroupChatMessageBubble key={msg.id} message={msg} agentIndex={agentIdx} />;
                   })}
                   <div ref={messagesEndRef} />
                 </div>
@@ -750,39 +774,19 @@ function GroupChatPanel({ tab, onUpdateTab, onGroupSend, onClear, compact = fals
 
           {/* Input */}
           <div className="border-t p-2 bg-card flex-shrink-0">
-            <form
-              className="flex gap-1.5 items-center"
-              onSubmit={(e) => {
-                e.preventDefault();
-                onGroupSend(tab.id);
-              }}
-            >
+            <form className="flex gap-1.5 items-center" onSubmit={(e) => { e.preventDefault(); onGroupSend(tab.id); }}>
               <Input
                 className="flex-1 h-8 text-sm"
                 placeholder="Message the group..."
                 value={tab.input}
-                onChange={(e) =>
-                  onUpdateTab(tab.id, (t) => ({ ...t, input: e.target.value }))
-                }
+                onChange={(e) => onUpdateTab(tab.id, (t) => ({ ...t, input: e.target.value }))}
                 disabled={tab.streaming}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    onGroupSend(tab.id);
-                  }
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onGroupSend(tab.id); }
                 }}
               />
-              <Button
-                type="submit"
-                size="icon"
-                className="h-8 w-8 flex-shrink-0"
-                disabled={tab.streaming || !tab.input.trim()}
-              >
-                {tab.streaming ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
+              <Button type="submit" size="icon" className="h-8 w-8 flex-shrink-0" disabled={tab.streaming || !tab.input.trim()}>
+                {tab.streaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </form>
           </div>
@@ -1696,7 +1700,7 @@ function ChatPage() {
     if (!tab.groupAgents || tab.groupAgents.length < 2) return;
 
     const userContent = tab.input.trim();
-    const groupAgents = [...tab.groupAgents]; // snapshot agents at call time
+    const groupAgents: GroupAgentRef[] = [...(tab.groupAgents ?? [])]; // snapshot agents at call time
     const autoRound = tab.autoRound ?? false; // snapshot autoRound at call time
 
     const isFirstMessage = tab.messages.length === 0;
@@ -1718,7 +1722,7 @@ function ChatPage() {
     }));
 
     // sendRound: takes explicit agents param — no outer tab closure
-    const sendRound = async (prompt: string, historyMessages: Message[], agents: string[]) => {
+    const sendRound = async (prompt: string, historyMessages: Message[], agents: GroupAgentRef[]) => {
       const historyPayload = historyMessages.map((m) => ({
         role: m.role,
         content: m.content,
@@ -1730,7 +1734,11 @@ function ChatPage() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          agents,
+          agents: agents.map((a) =>
+            typeof a === 'string'
+              ? { agentId: a, instanceId: 'local' }
+              : a
+          ),
           message: prompt,
           history: historyPayload,
         }),
@@ -1766,7 +1774,10 @@ function ChatPage() {
             if (event.done) continue;
             if (event.agentId && event.thinking) {
               // Show typing indicator for this agent
-              const agentIdx = agents.indexOf(event.agentId);
+              const agentIdx = agents.findIndex((a) => {
+                const label = !a.instanceId || a.instanceId === 'local' ? a.agentId : `${a.agentId}@${a.instanceId}`;
+                return label === event.agentId || a.agentId === event.agentId;
+              });
               const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
               const thinkingId = `thinking-${event.agentId}`;
               updateTab(tabId, (t) => {
@@ -1785,7 +1796,10 @@ function ChatPage() {
                 };
               });
             } else if (event.agentId && event.content !== undefined) {
-              const agentIdx = agents.indexOf(event.agentId);
+              const agentIdx = agents.findIndex((a) => {
+                const label = !a.instanceId || a.instanceId === 'local' ? a.agentId : `${a.agentId}@${a.instanceId}`;
+                return label === event.agentId || a.agentId === event.agentId;
+              });
               const color = getAgentColor(agentIdx >= 0 ? agentIdx : 0);
               const thinkingId = `thinking-${event.agentId}`;
               const agentMsg: Message = {
@@ -2269,7 +2283,7 @@ function ChatPage() {
                   )}
                   {tab.mode === 'group' && tab.groupAgents && tab.groupAgents.length > 0 && (
                     <span className="text-[10px] text-purple-500 font-mono leading-tight truncate">
-                      {tab.groupAgents.join(' · ')}
+                      {tab.groupAgents.map((a) => a.agentId).join(' · ')}
                     </span>
                   )}
                 </div>
