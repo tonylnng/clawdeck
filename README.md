@@ -238,7 +238,7 @@ openclaw gateway restart
 
 Once instances are added, open **Chat** → create a **Group** tab:
 - Select **Instance** for each agent slot (Local or any added instance)
-- Enter the Agent ID (e.g. `main`, `tonic-ai-tech`)
+- Enter the Agent ID (e.g. `main`, `assistant`, `researcher`)
 - Mix agents from different machines freely
 - Remote agents display as `agentId@InstanceName`
 
