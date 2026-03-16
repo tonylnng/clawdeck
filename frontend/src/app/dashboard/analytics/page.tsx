@@ -13,6 +13,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell, LineChart, Line, Legend,
 } from 'recharts';
+import { InstanceFilterBar } from '@/components/federation/InstanceFilterBar';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -312,6 +313,7 @@ function LatencyHeatmap({ data, label }: { data: Record<string, (number | null)[
 export default function AnalyticsPage() {
   const router = useRouter();
 
+  const [instanceFilter, setInstanceFilter] = useState<string>('local');
   const [usage, setUsage] = useState<UsageData | null>(null);
   const [models, setModels] = useState<ModelsData | null>(null);
   const [timeseries, setTimeseries] = useState<TimeseriesData | null>(null);
@@ -324,15 +326,30 @@ export default function AnalyticsPage() {
   const [timeMetric, setTimeMetric] = useState<'tokens' | 'cost'>('tokens');
 
   const fetchData = useCallback(async () => {
+    // "all" mode: not supported for analytics — show a note
+    if (instanceFilter === 'all') {
+      setUsage(null);
+      setModels(null);
+      setTimeseries(null);
+      setErrors(null);
+      setLatency(null);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
+      const base = instanceFilter === 'local'
+        ? '/api/analytics'
+        : `/api/instances/${instanceFilter}/analytics`;
+
       const [usageRes, modelsRes, tsRes, errRes, latRes] = await Promise.all([
-        fetch('/api/analytics/usage', { credentials: 'include' }),
-        fetch('/api/analytics/models', { credentials: 'include' }),
-        fetch('/api/analytics/timeseries', { credentials: 'include' }),
-        fetch('/api/analytics/errors', { credentials: 'include' }),
-        fetch('/api/analytics/latency', { credentials: 'include' }),
+        fetch(`${base}/usage`, { credentials: 'include' }),
+        fetch(`${base}/models`, { credentials: 'include' }),
+        fetch(`${base}/timeseries`, { credentials: 'include' }),
+        fetch(`${base}/errors`, { credentials: 'include' }),
+        fetch(`${base}/latency`, { credentials: 'include' }),
       ]);
 
       if (usageRes.status === 401) { router.push('/login'); return; }
@@ -356,7 +373,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [router, instanceFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
@@ -391,212 +408,233 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {/* Instance Filter Bar */}
+      <div className="px-4 py-2 border-b bg-card/50 flex-shrink-0">
+        <InstanceFilterBar value={instanceFilter} onChange={setInstanceFilter} />
+      </div>
+
       {/* Body */}
       <div className="flex-1 overflow-auto p-4 space-y-6">
 
-        {error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">{error}</div>
+        {/* "All" mode notice */}
+        {instanceFilter === 'all' && (
+          <div className="rounded-md bg-muted border px-4 py-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              🌐 Select a specific instance to view its analytics.
+            </p>
+            <p className="text-xs text-muted-foreground mt-1 opacity-70">
+              Federation-wide analytics aggregation is not supported — choose Local or a specific instance.
+            </p>
+          </div>
         )}
 
-        {/* Summary Cards */}
-        <section>
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Overview</h2>
-          <div className="flex flex-wrap gap-3">
-            <SummaryCard title="Total Sessions" value={usage ? formatNumber(usage.totalSessions) : '—'} icon={<Hash className="h-3.5 w-3.5" />} sub={usage?.period} />
-            <SummaryCard title="Total Messages" value={usage ? formatNumber(usage.totalMessages) : '—'} icon={<MessageSquare className="h-3.5 w-3.5" />} />
-            <SummaryCard title="Active Agents" value={usage ? String(activeAgents) : '—'} icon={<Bot className="h-3.5 w-3.5" />} />
-            <SummaryCard title="Top Model" value={topModel} icon={<Cpu className="h-3.5 w-3.5" />} sub={models?.models[0] ? `${models.models[0].sessions} sessions` : undefined} />
-            <SummaryCard title="Total Cost (30d)" value={totalCost > 0 ? formatCost(totalCost) : '—'} icon={<DollarSign className="h-3.5 w-3.5" />} sub="from session files" />
-          </div>
-        </section>
-
-        {/* Token Over Time */}
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
-              <TrendingUp className="h-3.5 w-3.5" />
-              Usage Over Time (30 days)
-            </h2>
-            <div className="flex gap-1">
-              <Button variant={timeMetric === 'tokens' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setTimeMetric('tokens')}>Tokens</Button>
-              <Button variant={timeMetric === 'cost' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setTimeMetric('cost')}>Cost</Button>
-            </div>
-          </div>
-          <Card>
-            <CardContent className="pt-4 px-4 pb-2">
-              {!timeseries ? (
-                <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
-              ) : (
-                <TimeseriesChart data={timeseries.series} agentIds={timeseries.agentIds} metric={timeMetric} />
-              )}
-            </CardContent>
-          </Card>
-        </section>
-
-        {/* Error Rate Dashboard */}
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              Error Rate (last 7 days)
-            </h2>
-            {errors && errors.total > 0 && (
-              <Badge variant="destructive" className="text-xs">{errors.total} total events</Badge>
+        {instanceFilter !== 'all' && (
+          <>
+            {error && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">{error}</div>
             )}
-          </div>
-          <Card>
-            <CardContent className="pt-4 px-4 pb-2">
-              {!errors ? (
-                <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
-              ) : (
-                <>
-                  <ErrorChart data={errors.buckets} />
-                  {errors.buckets.length > 0 && (
-                    <div className="mt-3 border-t pt-3">
-                      <p className="text-xs font-medium text-muted-foreground mb-2">Breakdown by type</p>
-                      <div className="flex flex-wrap gap-2">
-                        {Array.from(
-                          errors.buckets.reduce((map, bucket) => {
-                            Object.entries(bucket.categories).forEach(([cat, count]) => {
-                              map.set(cat, (map.get(cat) ?? 0) + count);
-                            });
-                            return map;
-                          }, new Map<string, number>())
-                        ).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
-                          <Badge key={cat} variant="outline" className="text-xs gap-1" style={{ borderColor: ERROR_COLORS[cat] ?? '#94a3b8', color: ERROR_COLORS[cat] ?? '#94a3b8' }}>
-                            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: ERROR_COLORS[cat] ?? '#94a3b8' }} />
-                            {cat}: {count}
-                          </Badge>
-                        ))}
-                      </div>
+
+            {/* Summary Cards */}
+            <section>
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Overview</h2>
+              <div className="flex flex-wrap gap-3">
+                <SummaryCard title="Total Sessions" value={usage ? formatNumber(usage.totalSessions) : '—'} icon={<Hash className="h-3.5 w-3.5" />} sub={usage?.period} />
+                <SummaryCard title="Total Messages" value={usage ? formatNumber(usage.totalMessages) : '—'} icon={<MessageSquare className="h-3.5 w-3.5" />} />
+                <SummaryCard title="Active Agents" value={usage ? String(activeAgents) : '—'} icon={<Bot className="h-3.5 w-3.5" />} />
+                <SummaryCard title="Top Model" value={topModel} icon={<Cpu className="h-3.5 w-3.5" />} sub={models?.models[0] ? `${models.models[0].sessions} sessions` : undefined} />
+                <SummaryCard title="Total Cost (30d)" value={totalCost > 0 ? formatCost(totalCost) : '—'} icon={<DollarSign className="h-3.5 w-3.5" />} sub="from session files" />
+              </div>
+            </section>
+
+            {/* Token Over Time */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                  <TrendingUp className="h-3.5 w-3.5" />
+                  Usage Over Time (30 days)
+                </h2>
+                <div className="flex gap-1">
+                  <Button variant={timeMetric === 'tokens' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setTimeMetric('tokens')}>Tokens</Button>
+                  <Button variant={timeMetric === 'cost' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setTimeMetric('cost')}>Cost</Button>
+                </div>
+              </div>
+              <Card>
+                <CardContent className="pt-4 px-4 pb-2">
+                  {!timeseries ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
+                  ) : (
+                    <TimeseriesChart data={timeseries.series} agentIds={timeseries.agentIds} metric={timeMetric} />
+                  )}
+                </CardContent>
+              </Card>
+            </section>
+
+            {/* Error Rate Dashboard */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Error Rate (last 7 days)
+                </h2>
+                {errors && errors.total > 0 && (
+                  <Badge variant="destructive" className="text-xs">{errors.total} total events</Badge>
+                )}
+              </div>
+              <Card>
+                <CardContent className="pt-4 px-4 pb-2">
+                  {!errors ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
+                  ) : (
+                    <>
+                      <ErrorChart data={errors.buckets} />
+                      {errors.buckets.length > 0 && (
+                        <div className="mt-3 border-t pt-3">
+                          <p className="text-xs font-medium text-muted-foreground mb-2">Breakdown by type</p>
+                          <div className="flex flex-wrap gap-2">
+                            {Array.from(
+                              errors.buckets.reduce((map, bucket) => {
+                                Object.entries(bucket.categories).forEach(([cat, count]) => {
+                                  map.set(cat, (map.get(cat) ?? 0) + count);
+                                });
+                                return map;
+                              }, new Map<string, number>())
+                            ).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
+                              <Badge key={cat} variant="outline" className="text-xs gap-1" style={{ borderColor: ERROR_COLORS[cat] ?? '#94a3b8', color: ERROR_COLORS[cat] ?? '#94a3b8' }}>
+                                <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: ERROR_COLORS[cat] ?? '#94a3b8' }} />
+                                {cat}: {count}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </section>
+
+            {/* Token Usage by Agent (bar) */}
+            <section>
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                <TrendingUp className="h-3.5 w-3.5" />
+                Token Usage by Agent (all-time)
+              </h2>
+              <Card>
+                <CardContent className="pt-4 px-4 pb-2">
+                  {!usage || usage.agents.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No agent data available'}</p>
+                  ) : (
+                    <TokenBarChart agents={usage.agents} />
+                  )}
+                </CardContent>
+              </Card>
+            </section>
+
+            {/* Agent Usage Table */}
+            <section>
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Agent Usage</h2>
+              <Card>
+                <CardContent className="p-0">
+                  {!usage || usage.agents.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No agent data available'}</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-xs text-muted-foreground">
+                            <th className="text-left px-4 py-2 font-medium">Agent</th>
+                            <th className="text-right px-4 py-2 font-medium">Sessions</th>
+                            <th className="text-right px-4 py-2 font-medium">Messages</th>
+                            <th className="text-right px-4 py-2 font-medium">Est. Tokens</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {usage.agents.slice().sort((a, b) => b.estimatedTokens - a.estimatedTokens).map((agent, idx) => (
+                            <tr key={agent.id} className={`border-b last:border-0 hover:bg-muted/30 transition-colors ${idx % 2 === 0 ? '' : 'bg-muted/10'}`}>
+                              <td className="px-4 py-2.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: AGENT_COLORS[idx % AGENT_COLORS.length] }} />
+                                  <span className="font-medium">{agent.id}</span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-2.5 text-right tabular-nums">{formatNumber(agent.sessions)}</td>
+                              <td className="px-4 py-2.5 text-right tabular-nums">{formatNumber(agent.messages)}</td>
+                              <td className="px-4 py-2.5 text-right tabular-nums">
+                                <Badge variant="secondary" className="font-mono text-xs">{formatNumber(agent.estimatedTokens)}</Badge>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </section>
+                </CardContent>
+              </Card>
+            </section>
 
-        {/* Token Usage by Agent (bar) */}
-        <section>
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3 flex items-center gap-1.5">
-            <TrendingUp className="h-3.5 w-3.5" />
-            Token Usage by Agent (all-time)
-          </h2>
-          <Card>
-            <CardContent className="pt-4 px-4 pb-2">
-              {!usage || usage.agents.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No agent data available'}</p>
-              ) : (
-                <TokenBarChart agents={usage.agents} />
-              )}
-            </CardContent>
-          </Card>
-        </section>
-
-        {/* Agent Usage Table */}
-        <section>
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Agent Usage</h2>
-          <Card>
-            <CardContent className="p-0">
-              {!usage || usage.agents.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No agent data available'}</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-xs text-muted-foreground">
-                        <th className="text-left px-4 py-2 font-medium">Agent</th>
-                        <th className="text-right px-4 py-2 font-medium">Sessions</th>
-                        <th className="text-right px-4 py-2 font-medium">Messages</th>
-                        <th className="text-right px-4 py-2 font-medium">Est. Tokens</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {usage.agents.slice().sort((a, b) => b.estimatedTokens - a.estimatedTokens).map((agent, idx) => (
-                        <tr key={agent.id} className={`border-b last:border-0 hover:bg-muted/30 transition-colors ${idx % 2 === 0 ? '' : 'bg-muted/10'}`}>
-                          <td className="px-4 py-2.5">
-                            <div className="flex items-center gap-2">
-                              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: AGENT_COLORS[idx % AGENT_COLORS.length] }} />
-                              <span className="font-medium">{agent.id}</span>
+            {/* Model Distribution */}
+            <section>
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Model Distribution</h2>
+              <Card>
+                <CardContent className="p-4">
+                  {!models || models.models.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-4">{loading ? 'Loading...' : 'No model data available'}</p>
+                  ) : (
+                    <ul className="space-y-3">
+                      {models.models.map((m) => (
+                        <li key={m.model} className="flex items-start gap-3">
+                          <Cpu className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-medium font-mono truncate">{shortModel(m.model)}</span>
+                              <Badge variant="outline" className="text-xs shrink-0">{m.sessions} session{m.sessions !== 1 ? 's' : ''}</Badge>
                             </div>
-                          </td>
-                          <td className="px-4 py-2.5 text-right tabular-nums">{formatNumber(agent.sessions)}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums">{formatNumber(agent.messages)}</td>
-                          <td className="px-4 py-2.5 text-right tabular-nums">
-                            <Badge variant="secondary" className="font-mono text-xs">{formatNumber(agent.estimatedTokens)}</Badge>
-                          </td>
-                        </tr>
+                            <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                              {m.model !== shortModel(m.model) && <span className="mr-2 opacity-60">{m.model}</span>}
+                              Used by: {m.agents.map((a, i) => (
+                                <span key={a}><span className="font-medium text-foreground">{a}</span>{i < m.agents.length - 1 && ', '}</span>
+                              ))}
+                            </p>
+                          </div>
+                        </li>
                       ))}
-                    </tbody>
-                  </table>
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+            </section>
+
+            {/* Latency Heatmap */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                  <Zap className="h-3.5 w-3.5" />
+                  Response Latency Heatmap (by hour)
+                </h2>
+                <div className="flex gap-1">
+                  <Button variant={latencyView === 'model' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setLatencyView('model')}>By Model</Button>
+                  <Button variant={latencyView === 'agent' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setLatencyView('agent')}>By Agent</Button>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        </section>
+              </div>
+              <Card>
+                <CardContent className="pt-4 px-4 pb-4">
+                  {!latency ? (
+                    <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
+                  ) : (
+                    <LatencyHeatmap
+                      data={latencyView === 'model' ? latency.modelHeatmap : latency.agentHeatmap}
+                      label={latencyView === 'model' ? 'Per model' : 'Per agent'}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </section>
 
-        {/* Model Distribution */}
-        <section>
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Model Distribution</h2>
-          <Card>
-            <CardContent className="p-4">
-              {!models || models.models.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">{loading ? 'Loading...' : 'No model data available'}</p>
-              ) : (
-                <ul className="space-y-3">
-                  {models.models.map((m) => (
-                    <li key={m.model} className="flex items-start gap-3">
-                      <Cpu className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium font-mono truncate">{shortModel(m.model)}</span>
-                          <Badge variant="outline" className="text-xs shrink-0">{m.sessions} session{m.sessions !== 1 ? 's' : ''}</Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                          {m.model !== shortModel(m.model) && <span className="mr-2 opacity-60">{m.model}</span>}
-                          Used by: {m.agents.map((a, i) => (
-                            <span key={a}><span className="font-medium text-foreground">{a}</span>{i < m.agents.length - 1 && ', '}</span>
-                          ))}
-                        </p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-        </section>
-
-        {/* Latency Heatmap */}
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
-              <Zap className="h-3.5 w-3.5" />
-              Response Latency Heatmap (by hour)
-            </h2>
-            <div className="flex gap-1">
-              <Button variant={latencyView === 'model' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setLatencyView('model')}>By Model</Button>
-              <Button variant={latencyView === 'agent' ? 'default' : 'outline'} size="sm" className="h-6 text-xs px-2" onClick={() => setLatencyView('agent')}>By Agent</Button>
-            </div>
-          </div>
-          <Card>
-            <CardContent className="pt-4 px-4 pb-4">
-              {!latency ? (
-                <p className="text-sm text-muted-foreground text-center py-8">{loading ? 'Loading...' : 'No data'}</p>
-              ) : (
-                <LatencyHeatmap
-                  data={latencyView === 'model' ? latency.modelHeatmap : latency.agentHeatmap}
-                  label={latencyView === 'model' ? 'Per model' : 'Per agent'}
-                />
-              )}
-            </CardContent>
-          </Card>
-        </section>
-
-        <p className="text-xs text-muted-foreground pb-2">
-          Token counts are estimates (~150 tokens/message) when not reported by the gateway. Cost data from session .jsonl files. Auto-refreshes every 30s.
-        </p>
+            <p className="text-xs text-muted-foreground pb-2">
+              Token counts are estimates (~150 tokens/message) when not reported by the gateway. Cost data from session .jsonl files. Auto-refreshes every 30s.
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

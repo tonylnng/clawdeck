@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, Radio, Bot, Clock, Hash, MessageSquare, Zap } from 'lucide-react';
+import { InstanceFilterBar } from '@/components/federation/InstanceFilterBar';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,8 +19,18 @@ interface SessionInfo {
   updatedAt?: number;
   createdAt?: number;
   messageCount?: number;
-  lastPing?: string; // relative time string
-  isRecent: boolean; // active in last 5 min
+  lastPing?: string;
+  isRecent: boolean;
+  // federation fields
+  instanceId?: string;
+  instanceName?: string;
+  instanceColor?: string;
+}
+
+interface InstanceMeta {
+  id: string;
+  name: string;
+  color: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,15 +66,78 @@ function channelBadgeStyle(channel: string): string {
 
 const AGENT_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#14b8a6', '#eab308'];
 
+// Parse raw session list from API into SessionInfo[]
+function parseSessionList(
+  rawSessions: Array<{ key: string; model?: string; updatedAt?: number; createdAt?: number; messageCount?: number }>,
+  instanceId?: string,
+  instanceName?: string,
+  instanceColor?: string,
+): SessionInfo[] {
+  const now = Date.now();
+  const fiveMin = 5 * 60 * 1000;
+  return rawSessions
+    .filter((s) => s.key.startsWith('agent:'))
+    .map((s) => {
+      const parts = s.key.split(':');
+      const agentId = parts[1] ?? 'unknown';
+      const channel = parts[2] ?? 'main';
+      const sessionSuffix = parts.slice(3).join(':');
+      const isRecent = s.updatedAt ? (now - s.updatedAt) < fiveMin : false;
+      return {
+        key: s.key,
+        agentId,
+        channel,
+        sessionSuffix,
+        model: s.model,
+        updatedAt: s.updatedAt,
+        createdAt: s.createdAt,
+        messageCount: s.messageCount,
+        isRecent,
+        instanceId,
+        instanceName,
+        instanceColor,
+      };
+    });
+}
+
 // ─── Session Row ──────────────────────────────────────────────────────────────
 
-function SessionRow({ session, agentColorMap }: { session: SessionInfo; agentColorMap: Map<string, string> }) {
+function SessionRow({
+  session,
+  agentColorMap,
+  showInstance,
+}: {
+  session: SessionInfo;
+  agentColorMap: Map<string, string>;
+  showInstance: boolean;
+}) {
   const color = agentColorMap.get(session.agentId) ?? '#94a3b8';
 
   return (
     <tr className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+      {showInstance && (
+        <td className="px-4 py-3 text-xs">
+          {session.instanceId ? (
+            <div className="flex items-center gap-1.5">
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: session.instanceColor ?? '#94a3b8' }}
+              />
+              <span className="text-muted-foreground">{session.instanceName ?? session.instanceId?.slice(0, 8)}</span>
+            </div>
+          ) : (
+            <span className="text-muted-foreground">🏠 Local</span>
+          )}
+        </td>
+      )}
       <td className="px-4 py-3">
         <div className="flex items-center gap-2">
+          {session.instanceColor && (
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: session.instanceColor }}
+            />
+          )}
           <span className="w-2 h-2 rounded-full flex-shrink-0 mt-0.5" style={{ background: color }} />
           <span className="font-medium text-sm">{session.agentId}</span>
         </div>
@@ -127,51 +201,77 @@ function AgentSummary({ agentId, sessions, color }: { agentId: string; sessions:
 
 export default function MonitorPage() {
   const router = useRouter();
+  const [instanceFilter, setInstanceFilter] = useState<string>('local');
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [instanceMetas, setInstanceMetas] = useState<InstanceMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [filter, setFilter] = useState<'all' | 'live'>('all');
 
+  // Load instance list for "all" mode
+  useEffect(() => {
+    fetch('/api/instances', { credentials: 'include' })
+      .then((r) => r.ok ? r.json() : { instances: [] })
+      .then((data: { instances?: InstanceMeta[] }) => setInstanceMetas(data.instances ?? []))
+      .catch(() => { /* silent */ });
+  }, []);
+
   const fetchSessions = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/sessions', { credentials: 'include' });
-      if (res.status === 401) { router.push('/login'); return; }
-      if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.status}`);
+      if (instanceFilter === 'local') {
+        // Local only
+        const res = await fetch('/api/sessions', { credentials: 'include' });
+        if (res.status === 401) { router.push('/login'); return; }
+        if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.status}`);
+        const data = await res.json() as { sessions: Array<{ key: string; model?: string; updatedAt?: number; createdAt?: number; messageCount?: number }> };
+        setSessions(parseSessionList(data.sessions ?? []));
+      } else if (instanceFilter === 'all') {
+        // Local + all remote instances in parallel
+        const localPromise = fetch('/api/sessions', { credentials: 'include' })
+          .then((r) => r.ok ? r.json() : { sessions: [] })
+          .then((d: { sessions: Array<{ key: string; model?: string; updatedAt?: number; createdAt?: number; messageCount?: number }> }) =>
+            parseSessionList(d.sessions ?? [])
+          );
 
-      const data = await res.json() as { sessions: Array<{
-        key: string; model?: string; updatedAt?: number; createdAt?: number; messageCount?: number;
-      }> };
+        const remotePromises = instanceMetas.map((inst) =>
+          fetch(`/api/instances/${inst.id}/sessions`, { credentials: 'include' })
+            .then((r) => r.ok ? r.json() : { sessions: [] })
+            .then((d: { sessions: Array<{ key: string; model?: string; updatedAt?: number; createdAt?: number; messageCount?: number }> }) =>
+              parseSessionList(d.sessions ?? [], inst.id, inst.name, inst.color)
+            )
+            .catch(() => [] as SessionInfo[])
+        );
 
-      const now = Date.now();
-      const fiveMin = 5 * 60 * 1000;
-
-      const parsed: SessionInfo[] = (data.sessions ?? [])
-        .filter((s) => s.key.startsWith('agent:'))
-        .map((s) => {
-          const parts = s.key.split(':');
-          const agentId = parts[1] ?? 'unknown';
-          const channel = parts[2] ?? 'main';
-          const sessionSuffix = parts.slice(3).join(':');
-          const isRecent = s.updatedAt ? (now - s.updatedAt) < fiveMin : false;
-          return { key: s.key, agentId, channel, sessionSuffix, model: s.model, updatedAt: s.updatedAt, createdAt: s.createdAt, messageCount: s.messageCount, isRecent };
-        })
-        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-
-      setSessions(parsed);
+        const results = await Promise.allSettled([localPromise, ...remotePromises]);
+        const merged: SessionInfo[] = [];
+        results.forEach((r) => {
+          if (r.status === 'fulfilled') merged.push(...r.value);
+        });
+        merged.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+        setSessions(merged);
+      } else {
+        // Specific remote instance
+        const res = await fetch(`/api/instances/${instanceFilter}/sessions`, { credentials: 'include' });
+        if (res.status === 401) { router.push('/login'); return; }
+        if (!res.ok) throw new Error(`Failed to fetch remote sessions: ${res.status}`);
+        const data = await res.json() as { sessions: Array<{ key: string; model?: string; updatedAt?: number; createdAt?: number; messageCount?: number }> };
+        const inst = instanceMetas.find((i) => i.id === instanceFilter);
+        setSessions(parseSessionList(data.sessions ?? [], instanceFilter, inst?.name, inst?.color));
+      }
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [router, instanceFilter, instanceMetas]);
 
   useEffect(() => { fetchSessions(); }, [fetchSessions]);
   useEffect(() => {
-    const interval = setInterval(fetchSessions, 10_000); // poll every 10s
+    const interval = setInterval(fetchSessions, 10_000);
     return () => clearInterval(interval);
   }, [fetchSessions]);
 
@@ -189,6 +289,7 @@ export default function MonitorPage() {
 
   const liveSessions = sessions.filter((s) => s.isRecent);
   const displaySessions = filter === 'live' ? liveSessions : sessions;
+  const showInstance = instanceFilter === 'all';
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -218,6 +319,11 @@ export default function MonitorPage() {
             Refresh
           </Button>
         </div>
+      </div>
+
+      {/* Instance Filter Bar */}
+      <div className="px-4 py-2 border-b bg-card/50 flex-shrink-0">
+        <InstanceFilterBar value={instanceFilter} onChange={setInstanceFilter} />
       </div>
 
       {/* Body */}
@@ -265,6 +371,7 @@ export default function MonitorPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-xs text-muted-foreground">
+                        {showInstance && <th className="text-left px-4 py-2 font-medium">Instance</th>}
                         <th className="text-left px-4 py-2 font-medium">Agent</th>
                         <th className="text-left px-4 py-2 font-medium">Channel</th>
                         <th className="text-left px-4 py-2 font-medium">Session</th>
@@ -275,7 +382,7 @@ export default function MonitorPage() {
                     </thead>
                     <tbody>
                       {displaySessions.map((session) => (
-                        <SessionRow key={session.key} session={session} agentColorMap={agentColorMap} />
+                        <SessionRow key={`${session.instanceId ?? 'local'}:${session.key}`} session={session} agentColorMap={agentColorMap} showInstance={showInstance} />
                       ))}
                     </tbody>
                   </table>

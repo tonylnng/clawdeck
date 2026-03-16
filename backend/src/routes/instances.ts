@@ -177,4 +177,56 @@ router.get('/all/status', async (_req: Request, res: Response) => {
   res.json({ instances: results });
 });
 
+// ── Federation Proxy Routes ───────────────────────────────────────────────────
+// These proxy requests to a remote ClawDeck instance, forwarding auth and params.
+
+async function proxyToInstance(
+  instanceId: string,
+  remotePath: string,
+  queryString: string,
+  res: Response,
+): Promise<void> {
+  const instances = await readInstances();
+  const inst = instances.find((i) => i.id === instanceId);
+  if (!inst) { res.status(404).json({ error: 'Instance not found' }); return; }
+  const url = `${inst.url}${remotePath}${queryString ? `?${queryString}` : ''}`;
+  try {
+    const upstream = await fetch(url, {
+      headers: { Authorization: `Bearer ${inst.token}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!upstream.ok) throw new Error(`HTTP ${upstream.status}`);
+    const data = await upstream.json();
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: 'Failed to reach instance', detail: String(err) });
+  }
+}
+
+// GET /api/instances/:id/sessions → proxy to remote GET /api/sessions
+router.get('/:id/sessions', async (req: Request, res: Response) => {
+  await proxyToInstance(req.params.id, '/api/sessions', req.url.split('?')[1] ?? '', res);
+});
+
+// GET /api/instances/:id/memory/:agent → proxy to remote GET /api/memory/:agent
+router.get('/:id/memory/:agent', async (req: Request, res: Response) => {
+  await proxyToInstance(req.params.id, `/api/memory/${req.params.agent}`, req.url.split('?')[1] ?? '', res);
+});
+
+// GET /api/instances/:id/logs → proxy to remote GET /api/logs (with query params)
+router.get('/:id/logs', async (req: Request, res: Response) => {
+  const qs = new URLSearchParams(req.query as Record<string, string>).toString();
+  await proxyToInstance(req.params.id, '/api/logs', qs, res);
+});
+
+// GET /api/instances/:id/analytics → proxy to remote GET /api/analytics
+router.get('/:id/analytics', async (req: Request, res: Response) => {
+  await proxyToInstance(req.params.id, '/api/analytics', req.url.split('?')[1] ?? '', res);
+});
+
+// GET /api/instances/:id/monitor → proxy to remote GET /api/monitor
+router.get('/:id/monitor', async (req: Request, res: Response) => {
+  await proxyToInstance(req.params.id, '/api/monitor', req.url.split('?')[1] ?? '', res);
+});
+
 export default router;

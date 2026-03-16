@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { Search, Trash2, Brain, Loader2, RefreshCw } from 'lucide-react';
+import { Search, Trash2, Brain, Loader2, RefreshCw, Globe } from 'lucide-react';
 
 const AGENTS = ['main', 'tonic-ai-tech', 'tonic-ai-workflow'];
 
@@ -22,6 +22,12 @@ interface Memory {
   created_at?: string;
   createdAt?: string;
   scope?: string;
+}
+
+interface Instance {
+  id: string;
+  name: string;
+  color: string;
 }
 
 function ImportanceBar({ value }: { value: number }) {
@@ -45,9 +51,11 @@ function ImportanceBar({ value }: { value: number }) {
 function MemoryCard({
   memory,
   onDelete,
+  isRemote,
 }: {
   memory: Memory;
   onDelete: (id: string) => void;
+  isRemote: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -72,21 +80,23 @@ function MemoryCard({
     <div className="rounded-lg border bg-card p-4 space-y-3 hover:shadow-sm transition-shadow">
       <div className="flex items-start justify-between gap-3">
         <p className="text-sm leading-relaxed flex-1">{memory.text}</p>
-        <Button
-          variant={confirming ? 'destructive' : 'ghost'}
-          size="icon"
-          className="h-7 w-7 flex-shrink-0"
-          onClick={handleDelete}
-          disabled={deleting}
-          title={confirming ? 'Click again to confirm' : 'Delete memory'}
-          onBlur={() => setConfirming(false)}
-        >
-          {deleting ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <Trash2 className="h-3 w-3" />
-          )}
-        </Button>
+        {!isRemote && (
+          <Button
+            variant={confirming ? 'destructive' : 'ghost'}
+            size="icon"
+            className="h-7 w-7 flex-shrink-0"
+            onClick={handleDelete}
+            disabled={deleting}
+            title={confirming ? 'Click again to confirm' : 'Delete memory'}
+            onBlur={() => setConfirming(false)}
+          >
+            {deleting ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Trash2 className="h-3 w-3" />
+            )}
+          </Button>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -114,6 +124,8 @@ function MemoryCard({
 
 export default function MemoryPage() {
   const [selectedAgent, setSelectedAgent] = useState('main');
+  const [selectedInstance, setSelectedInstance] = useState<string>('local');
+  const [instances, setInstances] = useState<Instance[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,21 +133,41 @@ export default function MemoryPage() {
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Fetch instance list on mount
+  useEffect(() => {
+    fetch('/api/instances', { credentials: 'include' })
+      .then((r) => r.ok ? r.json() : { instances: [] })
+      .then((data: { instances?: Instance[] }) => {
+        setInstances(data.instances ?? []);
+      })
+      .catch(() => { /* silent */ });
+  }, []);
+
   const extractMemories = (data: unknown): Memory[] => {
     if (!data) return [];
-    // Handle various response shapes from the gateway
     if (Array.isArray(data)) return data as Memory[];
     const obj = data as Record<string, unknown>;
     if (Array.isArray(obj.memories)) return obj.memories as Memory[];
     if (Array.isArray(obj.results)) return obj.results as Memory[];
     if (obj.result && Array.isArray(obj.result)) return obj.result as Memory[];
-    // Sometimes result is nested
     if (obj.result && typeof obj.result === 'object') {
       const inner = obj.result as Record<string, unknown>;
       if (Array.isArray(inner.memories)) return inner.memories as Memory[];
     }
     return [];
   };
+
+  const buildUrl = useCallback((agent: string, instance: string, query?: string): string => {
+    if (instance === 'local') {
+      return query
+        ? `/api/memory/${agent}/search?q=${encodeURIComponent(query)}`
+        : `/api/memory/${agent}`;
+    } else {
+      return query
+        ? `/api/instances/${instance}/memory/${agent}/search?q=${encodeURIComponent(query)}`
+        : `/api/instances/${instance}/memory/${agent}`;
+    }
+  }, []);
 
   const loadMemories = useCallback(async (query?: string) => {
     if (query !== undefined && query.length > 0) {
@@ -146,14 +178,11 @@ export default function MemoryPage() {
     setError(null);
 
     try {
-      const url =
-        query
-          ? `/api/memory/${selectedAgent}/search?q=${encodeURIComponent(query)}`
-          : `/api/memory/${selectedAgent}`;
+      const url = buildUrl(selectedAgent, selectedInstance, query);
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || `HTTP ${res.status}`);
+        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
       }
       const data = await res.json();
       setMemories(extractMemories(data));
@@ -163,13 +192,13 @@ export default function MemoryPage() {
       setLoading(false);
       setSearching(false);
     }
-  }, [selectedAgent]);
+  }, [selectedAgent, selectedInstance, buildUrl]);
 
-  // Load on agent change
+  // Load on agent or instance change
   useEffect(() => {
     setSearchQuery('');
     loadMemories();
-  }, [selectedAgent, loadMemories]);
+  }, [selectedAgent, selectedInstance, loadMemories]);
 
   // Debounced search
   useEffect(() => {
@@ -194,7 +223,7 @@ export default function MemoryPage() {
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || `HTTP ${res.status}`);
+        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
       }
       setMemories((prev) => prev.filter((m) => m.id !== memId));
     } catch (err) {
@@ -203,6 +232,9 @@ export default function MemoryPage() {
   };
 
   const isLoading = loading || searching;
+  const isRemote = selectedInstance !== 'local';
+
+  const activeInstance = isRemote ? instances.find((i) => i.id === selectedInstance) : null;
 
   return (
     <div className="h-full flex flex-col">
@@ -212,8 +244,30 @@ export default function MemoryPage() {
           <div className="flex items-center gap-2">
             <Brain className="h-5 w-5 text-muted-foreground" />
             <h1 className="font-semibold">Memory Browser</h1>
+            {isRemote && activeInstance && (
+              <span
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium text-white"
+                style={{ backgroundColor: activeInstance.color }}
+              >
+                <Globe className="h-3 w-3" />
+                {activeInstance.name}
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 ml-auto flex-wrap">
+            {/* Instance selector */}
+            <select
+              value={selectedInstance}
+              onChange={(e) => setSelectedInstance(e.target.value)}
+              className="text-sm bg-background border rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="local">🏠 Local</option>
+              {instances.map((inst) => (
+                <option key={inst.id} value={inst.id}>{inst.name}</option>
+              ))}
+            </select>
+
+            {/* Agent selector */}
             <select
               value={selectedAgent}
               onChange={(e) => setSelectedAgent(e.target.value)}
@@ -223,6 +277,7 @@ export default function MemoryPage() {
                 <option key={a} value={a}>{a}</option>
               ))}
             </select>
+
             <Button
               variant="outline"
               size="sm"
@@ -272,6 +327,11 @@ export default function MemoryPage() {
             <p className="text-sm">
               {searchQuery ? 'No memories found for this query' : 'No memories found'}
             </p>
+            {isRemote && (
+              <p className="text-xs mt-1 text-muted-foreground/60">
+                Viewing remote instance: {activeInstance?.name ?? selectedInstance}
+              </p>
+            )}
           </div>
         )}
 
@@ -281,11 +341,17 @@ export default function MemoryPage() {
               <p className="text-xs text-muted-foreground">
                 {memories.length} {memories.length === 1 ? 'memory' : 'memories'}
                 {searchQuery && ` matching "${searchQuery}"`}
+                {isRemote && activeInstance && ` on ${activeInstance.name}`}
               </p>
             </div>
             <div className="space-y-3">
               {memories.map((memory) => (
-                <MemoryCard key={memory.id} memory={memory} onDelete={handleDelete} />
+                <MemoryCard
+                  key={memory.id}
+                  memory={memory}
+                  onDelete={handleDelete}
+                  isRemote={isRemote}
+                />
               ))}
             </div>
           </>

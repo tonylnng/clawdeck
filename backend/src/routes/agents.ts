@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
 import fetch from 'node-fetch';
 import multer from 'multer';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 import { requireAuth } from '../middleware/auth';
 import { redactMiddleware, redactObject, redactString } from '../middleware/redact';
 
@@ -56,6 +59,40 @@ async function invokeGatewayTool(tool: string, args: Record<string, unknown> = {
 
   return res.json();
 }
+
+// GET /api/agents/scan - discover locally installed agents from ~/.openclaw/agents/
+router.get('/scan', async (_req: Request, res: Response) => {
+  const agentsDir = path.join(os.homedir(), '.openclaw', 'agents');
+  try {
+    const entries = await fs.readdir(agentsDir, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+
+    const agents = await Promise.all(dirs.map(async (id) => {
+      const base = path.join(agentsDir, id, 'agent');
+      // Try config.json first, then openclaw.json
+      for (const filename of ['config.json', 'openclaw.json']) {
+        try {
+          const raw = await fs.readFile(path.join(base, filename), 'utf-8');
+          const cfg = JSON.parse(raw) as { name?: string; model?: string };
+          return {
+            id,
+            name: cfg.name ?? id,
+            configFound: true,
+            ...(cfg.model ? { model: cfg.model } : {}),
+          };
+        } catch {
+          // try next file
+        }
+      }
+      return { id, name: id, configFound: false };
+    }));
+
+    res.json({ agents });
+  } catch (err) {
+    console.error('Failed to scan agents dir:', err);
+    res.status(502).json({ error: 'Failed to scan agents directory', detail: String(err) });
+  }
+});
 
 // GET /api/agents - list all agents (deduplicated by agentId)
 router.get('/', async (_req: Request, res: Response) => {

@@ -7,9 +7,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   RefreshCw, Trash2, Search, Filter, Clock, HardDrive,
-  MessageSquare, AlertTriangle, CheckSquare, Square, X,
+  MessageSquare, AlertTriangle, CheckSquare, Square, X, Globe,
 } from 'lucide-react';
 import { Eye, ChevronRight, User, Bot } from 'lucide-react';
+import { InstanceFilterBar } from '@/components/federation/InstanceFilterBar';
 
 interface SessionEntry {
   key: string;
@@ -19,6 +20,10 @@ interface SessionEntry {
   updatedAt?: string;
   createdAt?: string;
   sizeBytes?: number;
+  // Federation fields
+  instanceId?: string;
+  instanceName?: string;
+  instanceColor?: string;
 }
 
 interface SessionMessage {
@@ -27,6 +32,16 @@ interface SessionMessage {
   content: string;
   timestamp: string;
   source?: string;
+}
+
+interface Instance {
+  id: string;
+  name: string;
+  color: string;
+}
+
+interface SessionsApiResponse {
+  sessions: SessionEntry[];
 }
 
 function relativeTime(ts?: string): string {
@@ -130,11 +145,8 @@ function SessionDetailPanel({
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      {/* Panel */}
       <div className="relative w-full max-w-lg bg-card border-l shadow-2xl flex flex-col h-full">
-        {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b flex-shrink-0">
           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
             <ChevronRight className="h-4 w-4" />
@@ -151,7 +163,6 @@ function SessionDetailPanel({
           </div>
         </div>
 
-        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {loading && (
             <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
@@ -166,7 +177,6 @@ function SessionDetailPanel({
           )}
           {messages.map((msg) => (
             <div key={msg.id} className={`flex gap-2.5 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-              {/* Avatar */}
               <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-[10px] ${
                 msg.role === 'user'
                   ? 'bg-primary text-primary-foreground'
@@ -174,7 +184,6 @@ function SessionDetailPanel({
               }`}>
                 {msg.role === 'user' ? <User className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
               </div>
-              {/* Bubble */}
               <div className={`flex flex-col gap-0.5 max-w-[85%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                 <div className={`rounded-lg px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words ${
                   msg.role === 'user'
@@ -191,10 +200,10 @@ function SessionDetailPanel({
           ))}
         </div>
 
-        {/* Footer */}
         <div className="px-4 py-2 border-t flex-shrink-0 text-[10px] text-muted-foreground">
           Last active: {relativeTime(session.updatedAt)} · Size: {formatSize(session.sizeBytes)}
           {session.model && <> · Model: {session.model.split('/').pop()}</>}
+          {session.instanceName && <> · Instance: {session.instanceName}</>}
         </div>
       </div>
     </div>
@@ -214,16 +223,84 @@ export default function SessionsPage() {
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [viewSession, setViewSession] = useState<SessionEntry | null>(null);
+  const [instanceFilter, setInstanceFilter] = useState<string>('local');
 
-  const fetchSessions = useCallback(async () => {
+  const showInstanceCol = instanceFilter !== 'local';
+
+  const fetchSessions = useCallback(async (filter: string) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/sessions', { credentials: 'include' });
-      if (res.status === 401) { router.push('/login'); return; }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json() as { sessions: SessionEntry[] };
-      setSessions(data.sessions ?? []);
+      let list: SessionEntry[] = [];
+
+      if (filter === 'local') {
+        const res = await fetch('/api/sessions', { credentials: 'include' });
+        if (res.status === 401) { router.push('/login'); return; }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as SessionsApiResponse;
+        list = data.sessions ?? [];
+      } else if (filter === 'all') {
+        // Local
+        const localRes = await fetch('/api/sessions', { credentials: 'include' });
+        if (localRes.status === 401) { router.push('/login'); return; }
+        if (localRes.ok) {
+          const data = await localRes.json() as SessionsApiResponse;
+          list.push(...(data.sessions ?? []));
+        }
+        // All instances in parallel
+        const instRes = await fetch('/api/instances', { credentials: 'include' });
+        if (instRes.ok) {
+          const instData = await instRes.json() as { instances?: Instance[] };
+          const instances = instData.instances ?? [];
+          const results = await Promise.allSettled(
+            instances.map((inst) =>
+              fetch(`/api/instances/${inst.id}/sessions`, { credentials: 'include' })
+                .then((r) => r.ok ? r.json() as Promise<SessionsApiResponse> : Promise.reject(r.status))
+                .then((d) =>
+                  (d.sessions ?? []).map((s) => ({
+                    ...s,
+                    instanceId: inst.id,
+                    instanceName: inst.name,
+                    instanceColor: inst.color,
+                  }))
+                )
+            )
+          );
+          for (const result of results) {
+            if (result.status === 'fulfilled') {
+              list.push(...result.value);
+            }
+          }
+        }
+      } else {
+        // Specific instance
+        const res = await fetch(`/api/instances/${filter}/sessions`, { credentials: 'include' });
+        if (res.status === 401) { router.push('/login'); return; }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as SessionsApiResponse;
+
+        // Get instance info for name/color
+        let instanceName: string | undefined;
+        let instanceColor: string | undefined;
+        try {
+          const instRes = await fetch('/api/instances', { credentials: 'include' });
+          if (instRes.ok) {
+            const instData = await instRes.json() as { instances?: Instance[] };
+            const found = (instData.instances ?? []).find((i) => i.id === filter);
+            instanceName = found?.name;
+            instanceColor = found?.color;
+          }
+        } catch { /* best effort */ }
+
+        list = (data.sessions ?? []).map((s) => ({
+          ...s,
+          instanceId: filter,
+          instanceName,
+          instanceColor,
+        }));
+      }
+
+      setSessions(list);
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -232,7 +309,10 @@ export default function SessionsPage() {
     }
   }, [router]);
 
-  useEffect(() => { fetchSessions(); }, [fetchSessions]);
+  useEffect(() => {
+    setSelected(new Set());
+    fetchSessions(instanceFilter);
+  }, [instanceFilter, fetchSessions]);
 
   const agentIds = Array.from(new Set(sessions.map((s) => s.key.split(':')[1]).filter((x): x is string => Boolean(x)))).sort();
 
@@ -246,12 +326,14 @@ export default function SessionsPage() {
     return true;
   });
 
-  const allSelected = filtered.length > 0 && filtered.every((s) => selected.has(s.key));
+  // Only local sessions can be bulk-selected for delete
+  const deletableFiltered = filtered.filter((s) => !s.instanceId);
+  const allSelected = deletableFiltered.length > 0 && deletableFiltered.every((s) => selected.has(s.key));
   const someSelected = selected.size > 0;
 
   const toggleAll = () => {
     if (allSelected) setSelected(new Set());
-    else setSelected(new Set(filtered.map((s) => s.key)));
+    else setSelected(new Set(deletableFiltered.map((s) => s.key)));
   };
 
   const toggleOne = (key: string) => {
@@ -272,7 +354,7 @@ export default function SessionsPage() {
   };
 
   const totalSize = sessions.reduce((sum, s) => sum + (s.sizeBytes ?? 0), 0);
-  const oldSessions = sessions.filter((s) => getDaysOld(s.updatedAt) >= 30);
+  const oldSessions = sessions.filter((s) => !s.instanceId && getDaysOld(s.updatedAt) >= 30);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -286,10 +368,18 @@ export default function SessionsPage() {
         </div>
         <div className="flex items-center gap-2">
           {lastUpdated && <span className="text-xs text-muted-foreground hidden sm:block"><Clock className="h-3 w-3 inline mr-1" />{lastUpdated.toLocaleTimeString()}</span>}
-          <Button variant="outline" size="sm" onClick={fetchSessions} disabled={loading} className="h-8 gap-1.5 text-xs">
+          <Button variant="outline" size="sm" onClick={() => fetchSessions(instanceFilter)} disabled={loading} className="h-8 gap-1.5 text-xs">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />Refresh
           </Button>
         </div>
+      </div>
+
+      {/* Instance Filter Bar */}
+      <div className="px-4 py-2 border-b bg-card/50 flex-shrink-0">
+        <InstanceFilterBar
+          value={instanceFilter}
+          onChange={(v) => setInstanceFilter(v)}
+        />
       </div>
 
       <div className="flex-1 overflow-auto p-4 space-y-4">
@@ -361,9 +451,16 @@ export default function SessionsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-xs text-muted-foreground">
-                      <th className="px-4 py-2 w-8"><button onClick={toggleAll} className="flex items-center justify-center">{allSelected ? <CheckSquare className="h-3.5 w-3.5 text-primary" /> : <Square className="h-3.5 w-3.5" />}</button></th>
+                      <th className="px-4 py-2 w-8">
+                        <button onClick={toggleAll} className="flex items-center justify-center">
+                          {allSelected ? <CheckSquare className="h-3.5 w-3.5 text-primary" /> : <Square className="h-3.5 w-3.5" />}
+                        </button>
+                      </th>
                       <th className="text-left px-4 py-2 font-medium">Session</th>
                       <th className="text-left px-4 py-2 font-medium">Channel</th>
+                      {showInstanceCol && (
+                        <th className="text-left px-4 py-2 font-medium">Instance</th>
+                      )}
                       <th className="text-left px-4 py-2 font-medium">Last Active</th>
                       <th className="text-left px-4 py-2 font-medium">Size</th>
                       <th className="text-left px-4 py-2 font-medium">Model</th>
@@ -376,25 +473,74 @@ export default function SessionsPage() {
                       const isOld = getDaysOld(session.updatedAt) >= 30;
                       const isDeleting = deleting.has(session.key);
                       const isSelected = selected.has(session.key);
+                      const isRemote = Boolean(session.instanceId);
+
                       return (
-                        <tr key={session.key} className={`border-b last:border-0 hover:bg-muted/30 transition-colors ${isSelected ? 'bg-primary/5' : ''} ${isDeleting ? 'opacity-40 pointer-events-none' : ''}`}>
-                          <td className="px-4 py-3 w-8"><button onClick={() => toggleOne(session.key)} className="flex items-center justify-center">{isSelected ? <CheckSquare className="h-3.5 w-3.5 text-primary" /> : <Square className="h-3.5 w-3.5 text-muted-foreground" />}</button></td>
+                        <tr
+                          key={`${session.instanceId ?? 'local'}:${session.key}`}
+                          className={`border-b last:border-0 hover:bg-muted/30 transition-colors ${isSelected ? 'bg-primary/5' : ''} ${isDeleting ? 'opacity-40 pointer-events-none' : ''}`}
+                          style={
+                            isRemote && session.instanceColor
+                              ? { borderLeft: `3px solid ${session.instanceColor}` }
+                              : undefined
+                          }
+                        >
+                          <td className="px-4 py-3 w-8">
+                            {!isRemote ? (
+                              <button onClick={() => toggleOne(session.key)} className="flex items-center justify-center">
+                                {isSelected ? <CheckSquare className="h-3.5 w-3.5 text-primary" /> : <Square className="h-3.5 w-3.5 text-muted-foreground" />}
+                              </button>
+                            ) : (
+                              <Globe className="h-3.5 w-3.5 text-muted-foreground mx-auto" />
+                            )}
+                          </td>
                           <td className="px-4 py-3">
                             <div className="font-medium text-sm">{agentId}</div>
                             <div className="text-xs text-muted-foreground font-mono truncate max-w-[220px]" title={session.key}>{session.key}</div>
                           </td>
-                          <td className="px-4 py-3"><span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${channelBadgeStyle(session.channel)}`}>{session.channel ?? 'unknown'}</span></td>
-                          <td className="px-4 py-3"><span className={`text-xs ${isOld ? 'text-amber-500' : 'text-muted-foreground'}`}>{relativeTime(session.updatedAt)}</span></td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${channelBadgeStyle(session.channel)}`}>
+                              {session.channel ?? 'unknown'}
+                            </span>
+                          </td>
+                          {showInstanceCol && (
+                            <td className="px-4 py-3">
+                              {session.instanceName ? (
+                                <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  <span
+                                    className="w-2 h-2 rounded-full flex-shrink-0"
+                                    style={{ backgroundColor: session.instanceColor ?? '#888' }}
+                                  />
+                                  {session.instanceName}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">Local</span>
+                              )}
+                            </td>
+                          )}
+                          <td className="px-4 py-3">
+                            <span className={`text-xs ${isOld ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                              {relativeTime(session.updatedAt)}
+                            </span>
+                          </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">{formatSize(session.sizeBytes)}</td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground font-mono truncate max-w-[120px]">{session.model ? session.model.split('/').pop() : '—'}</td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground font-mono truncate max-w-[120px]">
+                            {session.model ? session.model.split('/').pop() : '—'}
+                          </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-1">
                               <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary hover:bg-primary/10" onClick={() => setViewSession(session)} title="View messages" disabled={isDeleting}>
                                 <Eye className="h-3.5 w-3.5" />
                               </Button>
-                              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10" onClick={() => requestDelete([session])} disabled={isDeleting}>
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
+                              {isRemote ? (
+                                <span title="Remote session — cannot delete" className="h-7 w-7 flex items-center justify-center text-muted-foreground/40">
+                                  <Globe className="h-3.5 w-3.5" />
+                                </span>
+                              ) : (
+                                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10" onClick={() => requestDelete([session])} disabled={isDeleting}>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -407,7 +553,11 @@ export default function SessionsPage() {
           </CardContent>
         </Card>
 
-        <p className="text-xs text-muted-foreground">Showing {filtered.length} of {sessions.length} sessions · Deleting a session removes its message history permanently</p>
+        <p className="text-xs text-muted-foreground">
+          Showing {filtered.length} of {sessions.length} sessions
+          {instanceFilter !== 'local' && ' (including remote instances)'}
+          {' · '}Deleting a session removes its message history permanently
+        </p>
       </div>
     </div>
   );

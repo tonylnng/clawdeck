@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RefreshCw, Wifi, WifiOff, Trash2, Terminal, Bot, Copy, Check } from 'lucide-react';
+import { InstanceFilterBar } from '@/components/federation/InstanceFilterBar';
 
 interface LogLine {
   id: string;
@@ -131,7 +132,7 @@ function LogLineRow({ line }: { line: LogLine }) {
 }
 
 // ─────────────────────────────────────────────
-// Reusable log viewer panel
+// Reusable log viewer panel (local SSE)
 // ─────────────────────────────────────────────
 interface LogViewerProps {
   fetchUrl: string;
@@ -222,7 +223,7 @@ function LogViewer({ fetchUrl, streamUrl }: LogViewerProps) {
     };
   }, [streamUrl]);
 
-  // Reload and reconnect whenever URL changes (e.g. agent switch)
+  // Reload and reconnect whenever URL changes
   useEffect(() => {
     setLines([]);
     loadInitial();
@@ -328,6 +329,120 @@ function LogViewer({ fetchUrl, streamUrl }: LogViewerProps) {
         {filteredLines.length === 0 ? (
           <p className="text-muted-foreground text-center py-8">
             {loading ? 'Loading...' : 'No log lines'}
+          </p>
+        ) : (
+          filteredLines.map((line) => (
+            <LogLineRow key={line.id} line={line} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Remote log viewer (no SSE — Refresh button only)
+// ─────────────────────────────────────────────
+interface RemoteLogViewerProps {
+  instanceId: string;
+  agentId?: string;
+}
+
+function RemoteLogViewer({ instanceId, agentId }: RemoteLogViewerProps) {
+  const [lines, setLines] = useState<LogLine[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<string>('all');
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const loadLogs = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (agentId) params.set('agentId', agentId);
+      const url = `/api/instances/${instanceId}/logs?${params.toString()}`;
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const parsed: LogLine[] = (data.lines || []).map((line: unknown) => {
+        if (typeof line === 'string') return parseLogLine(line);
+        if (typeof line === 'object' && line !== null) {
+          const obj = line as Record<string, unknown>;
+          return parseLogLine(obj.raw as string || JSON.stringify(obj));
+        }
+        return parseLogLine(String(line));
+      });
+      setLines(parsed);
+    } catch (err) {
+      console.error('Failed to load remote logs:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [instanceId, agentId]);
+
+  useEffect(() => {
+    setLines([]);
+    loadLogs();
+  }, [loadLogs]);
+
+  const LEVEL_FILTERS = ['all', 'error', 'warn', 'info', 'debug'];
+
+  const filteredLines = filter === 'all'
+    ? lines
+    : lines.filter((l) => {
+        const level = (l.level || '').toLowerCase();
+        if (filter === 'error') return ['error', 'fatal', 'err'].includes(level);
+        if (filter === 'warn') return ['warn', 'warning'].includes(level);
+        if (filter === 'info') return level === 'info';
+        if (filter === 'debug') return ['debug', 'trace'].includes(level);
+        return true;
+      });
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b bg-card flex-shrink-0 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <WifiOff className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">Remote (no live stream)</span>
+        </div>
+        <div className="flex-1" />
+        {LEVEL_FILTERS.map((lvl) => (
+          <Button
+            key={lvl}
+            variant={filter === lvl ? 'default' : 'ghost'}
+            size="sm"
+            className="h-7 px-2 text-xs capitalize"
+            onClick={() => setFilter(lvl)}
+          >
+            {lvl}
+          </Button>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 text-xs"
+          onClick={loadLogs}
+          disabled={loading}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="flex items-center gap-2 px-3 py-1 border-b bg-muted/20 text-xs text-muted-foreground flex-shrink-0">
+        <span>{filteredLines.length} lines</span>
+        {filter !== 'all' && <span>filtered from {lines.length} total</span>}
+      </div>
+
+      {/* Log Output */}
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto font-mono text-xs p-3 bg-background"
+      >
+        {filteredLines.length === 0 ? (
+          <p className="text-muted-foreground text-center py-8">
+            {loading ? 'Loading remote logs...' : 'No log lines'}
           </p>
         ) : (
           filteredLines.map((line) => (
@@ -499,40 +614,70 @@ function AgentLogTab() {
 // Page
 // ─────────────────────────────────────────────
 export default function LogsPage() {
+  const [instanceFilter, setInstanceFilter] = useState<string>('local');
+
   return (
     <div className="h-full flex flex-col">
       <Tabs defaultValue="gateway" className="flex flex-col h-full">
-        {/* Tab bar */}
-        <div className="flex items-center border-b bg-card px-3 flex-shrink-0">
-          <TabsList className="h-10 bg-transparent gap-0 p-0">
-            <TabsTrigger
-              value="gateway"
-              className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-4 text-xs gap-1.5"
-            >
-              <Terminal className="h-3.5 w-3.5" />
-              Gateway Log
-            </TabsTrigger>
-            <TabsTrigger
-              value="agent"
-              className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-4 text-xs gap-1.5"
-            >
-              <Bot className="h-3.5 w-3.5" />
-              Agent Log
-            </TabsTrigger>
-          </TabsList>
+        {/* Tab bar + Instance Filter Bar */}
+        <div className="border-b bg-card flex-shrink-0">
+          <div className="flex items-center px-3">
+            <TabsList className="h-10 bg-transparent gap-0 p-0">
+              <TabsTrigger
+                value="gateway"
+                className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-4 text-xs gap-1.5"
+              >
+                <Terminal className="h-3.5 w-3.5" />
+                Gateway Log
+              </TabsTrigger>
+              <TabsTrigger
+                value="agent"
+                className="h-10 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent px-4 text-xs gap-1.5"
+              >
+                <Bot className="h-3.5 w-3.5" />
+                Agent Log
+              </TabsTrigger>
+            </TabsList>
+            <div className="flex-1" />
+            <div className="py-1.5">
+              <InstanceFilterBar value={instanceFilter} onChange={setInstanceFilter} />
+            </div>
+          </div>
         </div>
 
         {/* Gateway tab */}
         <TabsContent value="gateway" className="flex-1 overflow-hidden mt-0 data-[state=inactive]:hidden">
-          <LogViewer
-            fetchUrl="/api/logs/gateway"
-            streamUrl="/api/logs/stream"
-          />
+          {instanceFilter === 'local' ? (
+            <LogViewer
+              fetchUrl="/api/logs/gateway"
+              streamUrl="/api/logs/stream"
+            />
+          ) : instanceFilter === 'all' ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center text-muted-foreground p-8">
+                <p className="text-sm">🌐 Select a specific instance to view its logs.</p>
+                <p className="text-xs mt-1 opacity-70">Federation-wide log streaming is not supported.</p>
+              </div>
+            </div>
+          ) : (
+            <RemoteLogViewer instanceId={instanceFilter} />
+          )}
         </TabsContent>
 
         {/* Agent tab */}
         <TabsContent value="agent" className="flex-1 overflow-hidden mt-0 data-[state=inactive]:hidden">
-          <AgentLogTab />
+          {instanceFilter === 'local' ? (
+            <AgentLogTab />
+          ) : instanceFilter === 'all' ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center text-muted-foreground p-8">
+                <p className="text-sm">🌐 Select a specific instance to view its logs.</p>
+                <p className="text-xs mt-1 opacity-70">Federation-wide log streaming is not supported.</p>
+              </div>
+            </div>
+          ) : (
+            <RemoteLogViewer instanceId={instanceFilter} />
+          )}
         </TabsContent>
       </Tabs>
     </div>
