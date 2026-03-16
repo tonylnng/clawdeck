@@ -62,7 +62,8 @@ async function invokeGatewayTool(tool: string, args: Record<string, unknown> = {
 
 // GET /api/agents/scan - discover locally installed agents from ~/.openclaw/agents/
 router.get('/scan', async (_req: Request, res: Response) => {
-  const agentsDir = path.join(os.homedir(), '.openclaw', 'agents');
+  const homeDir = process.env.OPENCLAW_HOME || os.homedir();
+  const agentsDir = path.join(homeDir, '.openclaw', 'agents');
   try {
     const entries = await fs.readdir(agentsDir, { withFileTypes: true });
     const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);

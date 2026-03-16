@@ -9,7 +9,7 @@ const router = Router();
 router.use(requireAuth);
 
 // Instances config file path
-const INSTANCES_FILE = path.join(os.homedir(), '.openclaw', 'clawdeck-instances.json');
+const INSTANCES_FILE = path.join(process.env.OPENCLAW_HOME || os.homedir(), '.openclaw', 'clawdeck-instances.json');
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
