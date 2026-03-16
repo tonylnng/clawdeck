@@ -182,6 +182,68 @@ docker compose up -d --build
 
 ---
 
+## Federation — Multi-Machine Setup
+
+ClawDeck can manage and orchestrate agents running on **separate machines** through its Instance Manager (`g+f`). You can also run **Cross-Instance Group Chat** with agents from different machines in a single conversation.
+
+### Quick Setup (Remote Machine)
+
+Run this on each remote machine you want to add to ClawDeck:
+
+```bash
+bash federation-setup.sh
+```
+
+This script automatically:
+- Checks OpenClaw and Tailscale are installed and connected
+- Updates `openclaw.json` with the required settings (backs up first)
+- Opens the gateway port in UFW for the Tailscale network only
+- Restarts the gateway and prints the URL + token to paste into ClawDeck
+
+### What the script configures
+
+Each remote OpenClaw instance needs three things in `~/.openclaw/openclaw.json`:
+
+```json5
+{
+  "gateway": {
+    "bind": "tailnet",           // listen on Tailscale interface
+    "tailscale": {
+      "mode": "off"              // bind=tailnet works without serve/funnel
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": { "enabled": true },
+        "responses": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+After updating, restart the gateway:
+```bash
+openclaw gateway restart
+```
+
+### Add the instance in ClawDeck
+
+1. Open ClawDeck → **Instances** (`g+f`) → **Add Instance**
+2. Enter the URL shown by the setup script: `http://<tailscale-ip>:<port>`
+3. Paste the gateway token from `~/.openclaw/openclaw.json → gateway.auth.token`
+4. Click **Test Connection** — you should see a green latency badge
+5. Save
+
+### Cross-Instance Group Chat
+
+Once instances are added, open **Chat** → create a **Group** tab:
+- Select **Instance** for each agent slot (Local or any added instance)
+- Enter the Agent ID (e.g. `main`, `tonic-ai-tech`)
+- Mix agents from different machines freely
+- Remote agents display as `agentId@InstanceName`
+
+---
+
 ## Remote Access (Tailscale)
 
 ClawDeck works great over [Tailscale](https://tailscale.com) for secure remote access from any device.
@@ -199,6 +261,36 @@ Or manually in `.env`:
 ```env
 NEXT_PUBLIC_BACKEND_URL=http://100.x.x.x:3001
 ```
+
+---
+
+## Troubleshooting
+
+### Federation: Connection fails / timeout
+
+**Check 1 — HTTP endpoints not enabled on remote machine**
+
+The remote OpenClaw gateway must have `chatCompletions` and `responses` endpoints enabled. Run `bash federation-setup.sh` on the remote machine, or add manually to `~/.openclaw/openclaw.json` and restart the gateway.
+
+**Check 2 — Gateway not reachable over Tailscale**
+
+Verify both machines are on the same Tailscale network (`tailscale status`). The remote gateway must bind to the Tailscale interface — use `"bind": "tailnet"` in `openclaw.json`, not `"loopback"`.
+
+**Check 3 — Firewall blocking the gateway port**
+
+If the remote machine has a firewall (UFW, iptables, etc.), ensure the gateway port (default `18789`) is allowed from the Tailscale IP range. The `federation-setup.sh` script handles this automatically.
+
+**Check 4 — Wrong token**
+
+Copy the full token from the remote machine's `~/.openclaw/openclaw.json` → `gateway.auth.token`. It must match exactly.
+
+### Cross-Instance Group Chat: agent returns 404
+
+The remote agent's OpenClaw gateway does not have HTTP endpoints enabled. See Check 1 above.
+
+### Gateway won't start after config change
+
+Validate your JSON syntax — a trailing comma or missing bracket will prevent startup. Check `openclaw gateway status` for the specific error.
 
 ---
 

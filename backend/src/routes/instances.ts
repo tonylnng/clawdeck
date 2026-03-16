@@ -46,16 +46,23 @@ async function pingInstance(url: string, token: string): Promise<{ ok: boolean; 
   try {
     const res = await fetch(`${url}/health`, {
       headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(10000),
     });
     const latencyMs = Date.now() - start;
     if (res.ok) {
       const data = await res.json() as { version?: string; proxy?: string };
       return { ok: true, latencyMs, version: data.version ?? data.proxy ?? 'unknown' };
     }
-    return { ok: false, latencyMs, error: `HTTP ${res.status}` };
+    return { ok: false, latencyMs, error: `HTTP ${res.status} — check token or gateway status` };
   } catch (err) {
-    return { ok: false, error: String(err) };
+    const name = (err as Error)?.name;
+    if (name === 'AbortError' || name === 'TimeoutError') {
+      return { ok: false, error: 'Connection timed out (10s) — check URL and network reachability' };
+    }
+    const msg = (err as Error)?.message || String(err);
+    if (msg.includes('ECONNREFUSED')) return { ok: false, error: 'Connection refused — is the gateway running on that machine?' };
+    if (msg.includes('ENOTFOUND') || msg.includes('getaddrinfo')) return { ok: false, error: 'Host not found — check the URL (Tailscale IP correct?)' };
+    return { ok: false, error: `Connection failed: ${msg}` };
   }
 }
 
